@@ -14,7 +14,7 @@ from detection.phone_detector import PhoneDetector
 FRAME = np.zeros((100, 100, 3), dtype=np.uint8)
 
 
-def box(kind, y=10, confidence=0.9):
+def box(kind, y=10, confidence=0.9, *, x2=30, y2=None):
     class Coordinates(list):
         def tolist(self):
             return list(self)
@@ -22,7 +22,7 @@ def box(kind, y=10, confidence=0.9):
     return SimpleNamespace(
         cls=[kind],
         conf=[confidence],
-        xyxy=[Coordinates([10, y, 30, y + 20])],
+        xyxy=[Coordinates([10, y, x2, y + 20 if y2 is None else y2])],
     )
 
 
@@ -100,6 +100,24 @@ class PhoneDetectorTests(unittest.TestCase):
                   for t in [0, 1, 2, 3]]
         self.assertEqual(actual, [[], [], ["phone_detected"], []])
 
+    def test_top_edge_in_upper_half_counts_even_when_center_is_low(self):
+        model = FakeModel([[box(0), box(67, 45, y2=85)] for _ in range(3)])
+        detector = PhoneDetector(model=model)
+        actual = [detector.detect(FRAME, timestamp=t) for t in [0, 0.8, 1.6]]
+        self.assertIn("phone_aimed_at_screen", [event.type.value for event in actual[2]])
+
+    def test_large_phone_counts_even_when_wholly_in_lower_half(self):
+        model = FakeModel([[box(0), box(67, 60, x2=80)] for _ in range(3)])
+        detector = PhoneDetector(model=model)
+        actual = [detector.detect(FRAME, timestamp=t) for t in [0, 0.8, 1.6]]
+        self.assertIn("phone_aimed_at_screen", [event.type.value for event in actual[2]])
+
+    def test_exact_50_percent_and_8_percent_boundaries_do_not_count(self):
+        model = FakeModel([[box(0), box(67, 50, x2=50)] for _ in range(3)])
+        detector = PhoneDetector(model=model)
+        actual = [detector.detect(FRAME, timestamp=t) for t in [0, 0.8, 1.6]]
+        self.assertNotIn("phone_aimed_at_screen", [event.type.value for event in actual[2]])
+
     def test_aimed_timer_survives_brief_missing_detection(self):
         model = FakeModel([[box(0), box(67, 30)], [box(0), box(67, 30)],
                            [box(0)], [box(0), box(67, 30)], [box(0), box(67, 30)]])
@@ -133,6 +151,17 @@ class PhoneDetectorTests(unittest.TestCase):
         self.assertEqual([[e.type.value for e in events] for events in actual],
                          [[], [], ["no_face"], [], ["no_face"]])
         self.assertEqual(actual[2][0].details["observation"], "no_person")
+        self.assertEqual(actual[2][0].details["phone_count"], 0)
+
+    def test_every_event_reports_phone_count_in_current_frame(self):
+        model = FakeModel([[box(67, 45, y2=85), box(67, 60)] for _ in range(4)])
+        detector = PhoneDetector(model=model)
+        with patch.object(phone_module, "ENABLE_NO_PERSON", True):
+            events = [event for t in [0, 1.0, 1.6, 3.1]
+                      for event in detector.detect(FRAME, timestamp=t)]
+        self.assertEqual({event.type.value for event in events},
+                         {"phone_detected", "phone_aimed_at_screen", "no_face"})
+        self.assertTrue(all(event.details["phone_count"] == 2 for event in events))
 
     def test_skipped_frames_keep_aimed_timer_and_phone_streak(self):
         model = FakeModel([[box(0), box(67, 30)] for _ in range(3)])

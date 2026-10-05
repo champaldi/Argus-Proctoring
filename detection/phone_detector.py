@@ -21,7 +21,8 @@ MIN_CONFIDENCE = 0.5
 PHONE_CONFIDENCE = 0.35
 PHONE_WINDOW = 5
 PHONE_MIN_HITS = 3
-UPPER_FRAME_FRACTION = 0.6
+UPPER_FRAME_FRACTION = 0.5
+LARGE_PHONE_AREA_FRACTION = 0.08
 AIMED_SECONDS = 1.5
 AIMED_MISSING_GRACE_SECONDS = 0.7
 NO_PERSON_SECONDS = 3.0
@@ -67,6 +68,7 @@ class PhoneDetector:
         event_type: EventType,
         now: float,
         *,
+        phone_count: int,
         confidence: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> ProctorEvent | None:
@@ -76,7 +78,8 @@ class PhoneDetector:
             return None
         self.last_emitted[event_type] = now
         return ProctorEvent.create(
-            event_type, source="phone_detector", confidence=confidence, details=details
+            event_type, source="phone_detector", confidence=confidence,
+            details={**(details or {}), "phone_count": phone_count},
         )
 
     def detect(self, frame: np.ndarray, *, timestamp: float | None = None) -> list[ProctorEvent]:
@@ -127,9 +130,15 @@ class PhoneDetector:
         self.last_timestamp = now
         phones = [item for item in detections if item.class_id == PHONE_CLASS_ID]
         people = [item for item in detections if item.class_id == PERSON_CLASS_ID]
+        phone_count = len(phones)
         upper_phones = [
             item for item in phones
-            if (item.bbox[1] + item.bbox[3]) / 2 < frame.shape[0] * UPPER_FRAME_FRACTION
+            if (
+                item.bbox[1] < frame.shape[0] * UPPER_FRAME_FRACTION
+                or max(0, item.bbox[2] - item.bbox[0])
+                * max(0, item.bbox[3] - item.bbox[1])
+                > frame.shape[0] * frame.shape[1] * LARGE_PHONE_AREA_FRACTION
+            )
         ]
         events: list[ProctorEvent] = []
 
@@ -141,13 +150,14 @@ class PhoneDetector:
         elif phones:
             phone = max(phones, key=lambda item: item.confidence)
             event = self._emit(
-                EventType.PHONE_DETECTED, now, confidence=phone.confidence,
+                EventType.PHONE_DETECTED, now, phone_count=phone_count,
+                confidence=phone.confidence,
                 details={"bbox": list(phone.bbox), "hits_in_window": hits},
             )
             if event is not None:
                 events.append(event)
 
-        # Положение оцениваем по центру рамки телефона.
+        # Считаем телефон направленным на экран по верхнему краю или площади.
         if upper_phones:
             if (self.aimed_missing_since is not None
                     and now - self.aimed_missing_since > AIMED_MISSING_GRACE_SECONDS):
@@ -160,7 +170,8 @@ class PhoneDetector:
             if duration > AIMED_SECONDS:
                 phone = max(upper_phones, key=lambda item: item.confidence)
                 event = self._emit(
-                    EventType.PHONE_AIMED_AT_SCREEN, now, confidence=phone.confidence,
+                    EventType.PHONE_AIMED_AT_SCREEN, now, phone_count=phone_count,
+                    confidence=phone.confidence,
                     details={"bbox": list(phone.bbox), "duration_seconds": duration},
                 )
                 if event is not None:
@@ -186,7 +197,7 @@ class PhoneDetector:
             duration = now - self.no_person_since
             if duration > NO_PERSON_SECONDS:
                 event = self._emit(
-                    EventType.NO_FACE, now,
+                    EventType.NO_FACE, now, phone_count=phone_count,
                     details={"observation": "no_person", "duration_seconds": duration},
                 )
                 if event is not None:
