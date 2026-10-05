@@ -1,0 +1,5 @@
+# Legacy Face Mesh API with iris landmarks; Python 3.10-3.12, 64-bit.
+mediapipe==0.10.21
+numpy==1.26.4
+# MediaPipe already uses this OpenCV distribution. Do not add opencv-python.
+opencv-contrib-python==4.11.0.86
