@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -12,6 +13,15 @@ from typing import Any
 import numpy as np
 
 from events import EventType, ProctorEvent
+
+
+_PROJECT_DATA = Path(__file__).resolve().parent.parent / "data"
+_YOLO_CONFIG_DIR = _PROJECT_DATA / "ultralytics"
+_MATPLOTLIB_CONFIG_DIR = _PROJECT_DATA / "matplotlib"
+_YOLO_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+_MATPLOTLIB_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("YOLO_CONFIG_DIR", str(_YOLO_CONFIG_DIR))
+os.environ.setdefault("MPLCONFIGDIR", str(_MATPLOTLIB_CONFIG_DIR))
 
 
 # Пороги вынесены сюда, чтобы их было легко настроить под камеру.
@@ -26,7 +36,6 @@ LARGE_PHONE_AREA_FRACTION = 0.08
 AIMED_SECONDS = 1.5
 AIMED_MISSING_GRACE_SECONDS = 0.7
 NO_PERSON_SECONDS = 3.0
-EVENT_COOLDOWN_SECONDS = 2.0
 ENABLE_NO_PERSON = False
 DETECT_EVERY_N_FRAMES = 3
 MODEL_NAME = "yolov8s.pt"
@@ -72,9 +81,8 @@ class PhoneDetector:
         confidence: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> ProctorEvent | None:
-        """Создаёт событие, если с прошлого прошло хотя бы две секунды."""
-        previous = self.last_emitted.get(event_type)
-        if previous is not None and now - previous < EVENT_COOLDOWN_SECONDS:
+        """Создаёт событие один раз за непрерывный эпизод нарушения."""
+        if event_type in self.last_emitted:
             return None
         self.last_emitted[event_type] = now
         return ProctorEvent.create(

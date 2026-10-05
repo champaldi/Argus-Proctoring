@@ -11,6 +11,7 @@ class EventContractTests(unittest.TestCase):
                 "phone_detected",
                 {"type": "gaze_side", "confidence": 0.75, "angle": 32},
                 {"type": EventType.GAZE_DOWN},
+                "too_close_to_camera",
                 ProctorEvent.create(EventType.NO_FACE, source="face"),
             ],
             default_source="test",
@@ -20,6 +21,7 @@ class EventContractTests(unittest.TestCase):
             EventType.PHONE_DETECTED,
             EventType.GAZE_SIDE,
             EventType.GAZE_DOWN,
+            EventType.TOO_CLOSE_TO_CAMERA,
             EventType.NO_FACE,
         ])
         self.assertEqual(events[1].details["angle"], 32)

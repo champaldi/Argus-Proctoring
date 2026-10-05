@@ -12,19 +12,23 @@ from uuid import uuid4
 
 from events import EventType, ProctorEvent
 
-from .risk import RiskScorer
+from .risk import RiskScorer, RiskSnapshot
 from .storage import EventStore, StoredEvent
 
 
 DEFAULT_COOLDOWNS: dict[EventType, float] = {
-    EventType.PHONE_DETECTED: 3.0,
-    EventType.PHONE_AIMED_AT_SCREEN: 5.0,
-    EventType.GAZE_DOWN: 3.0,
-    EventType.GAZE_SIDE: 3.0,
-    EventType.NO_FACE: 5.0,
-    EventType.MULTIPLE_FACES: 5.0,
-    EventType.HOTKEY_BLOCKED: 0.5,
-    EventType.WINDOW_SWITCHED: 2.0,
+    # Stateful vision modules emit once per continuous episode, so a new
+    # episode must not be hidden by an arbitrary time cooldown.
+    EventType.PHONE_DETECTED: 0.0,
+    EventType.PHONE_AIMED_AT_SCREEN: 0.0,
+    EventType.GAZE_DOWN: 0.0,
+    EventType.GAZE_SIDE: 0.0,
+    EventType.NO_FACE: 0.0,
+    EventType.MULTIPLE_FACES: 0.0,
+    EventType.TOO_CLOSE_TO_CAMERA: 0.0,
+    # Protection callbacks may report the same OS action more than once.
+    EventType.HOTKEY_BLOCKED: 0.25,
+    EventType.WINDOW_SWITCHED: 1.0,
     EventType.SUSPICIOUS_PROCESS: 10.0,
 }
 
@@ -44,6 +48,7 @@ class EventPipeline:
         on_recorded: Callable[[StoredEvent], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         cooldowns: dict[EventType, float] | None = None,
+        scorer: RiskScorer | None = None,
         queue_size: int = 256,
     ) -> None:
         self.session_id = uuid4().hex
@@ -51,9 +56,9 @@ class EventPipeline:
         self.screenshots_dir = screenshots_dir
         self.on_recorded = on_recorded
         self.on_error = on_error
-        self.cooldowns = dict(cooldowns or DEFAULT_COOLDOWNS)
+        self.cooldowns = dict(DEFAULT_COOLDOWNS if cooldowns is None else cooldowns)
         self._queue: queue.Queue[_QueuedEvent | None] = queue.Queue(queue_size)
-        self._scorer = RiskScorer()
+        self._scorer = scorer or RiskScorer()
         self._last_seen: dict[EventType, float] = {}
         self._dedupe_lock = threading.Lock()
         self._ready = threading.Event()
@@ -95,6 +100,9 @@ class EventPipeline:
             self._report_error("Очередь событий переполнена; событие пропущено")
             return False
         return True
+
+    def current_risk(self) -> RiskSnapshot:
+        return self._scorer.current()
 
     def stop(self, timeout: float = 5.0) -> None:
         if self._thread is None:
@@ -146,6 +154,9 @@ class EventPipeline:
                 finally:
                     self._queue.task_done()
         finally:
-            store.finish_session(self.session_id)
+            store.finish_session(
+                self.session_id,
+                final_risk=self._scorer.current().total,
+            )
             store.close()
 

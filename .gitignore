@@ -221,3 +221,6 @@ __marimo__/
 
 # Local proctoring session database and screenshots
 data/
+
+# Downloaded model weights
+*.pt

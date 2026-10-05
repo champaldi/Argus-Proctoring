@@ -46,7 +46,7 @@ class PhoneDetectorTests(unittest.TestCase):
     def tearDown(self):
         self.every_frame.stop()
 
-    def test_phone_needs_three_of_five_model_runs_and_repeats_after_two_seconds(self):
+    def test_phone_needs_three_of_five_model_runs_and_emits_once_per_episode(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0), box(67, 60)],
                            [box(0), box(67, 60)], [box(0), box(67, 60)],
                            [box(0), box(67, 60)]])
@@ -54,7 +54,7 @@ class PhoneDetectorTests(unittest.TestCase):
         times = [0, 0.1, 0.2, 1.0, 2.2]
         actual = [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
                   for t in times]
-        self.assertEqual(actual, [[], [], ["phone_detected"], [], ["phone_detected"]])
+        self.assertEqual(actual, [[], [], ["phone_detected"], [], []])
 
     def test_phone_window_accepts_one_missed_detection(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0)], [box(0), box(67, 60)],
@@ -149,7 +149,7 @@ class PhoneDetectorTests(unittest.TestCase):
         with patch.object(phone_module, "ENABLE_NO_PERSON", True):
             actual = [detector.detect(FRAME, timestamp=t) for t in [0, 3, 3.1, 4, 5.2]]
         self.assertEqual([[e.type.value for e in events] for events in actual],
-                         [[], [], ["no_face"], [], ["no_face"]])
+                         [[], [], ["no_face"], [], []])
         self.assertEqual(actual[2][0].details["observation"], "no_person")
         self.assertEqual(actual[2][0].details["phone_count"], 0)
 

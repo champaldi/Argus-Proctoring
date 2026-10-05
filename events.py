@@ -21,6 +21,7 @@ class EventType(str, Enum):
     GAZE_SIDE = "gaze_side"
     NO_FACE = "no_face"
     MULTIPLE_FACES = "multiple_faces"
+    TOO_CLOSE_TO_CAMERA = "too_close_to_camera"
     HOTKEY_BLOCKED = "hotkey_blocked"
     WINDOW_SWITCHED = "window_switched"
     SUSPICIOUS_PROCESS = "suspicious_process"

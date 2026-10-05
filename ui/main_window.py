@@ -12,6 +12,7 @@ from PySide6.QtGui import QCloseEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -21,15 +22,20 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from config import AppConfig
+from config import AppConfig, RISK_RED_ABOVE, RISK_YELLOW_FROM
 from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
-from core.storage import StoredEvent
+from core.storage import (
+    StoredEvent,
+    load_session_events,
+    record_teacher_verdict,
+)
 from events import ProctorEvent
 
 
@@ -40,6 +46,7 @@ EVENT_LABELS = {
     "gaze_side": "Долгий взгляд в сторону",
     "no_face": "Лицо не обнаружено",
     "multiple_faces": "В кадре несколько лиц",
+    "too_close_to_camera": "Слишком близко к камере",
     "hotkey_blocked": "Заблокирована комбинация клавиш",
     "window_switched": "Переключение окна",
     "suspicious_process": "Обнаружен запрещённый процесс",
@@ -87,6 +94,7 @@ class CameraWorker(QObject):
     module_status = Signal(object)
     camera_status = Signal(bool, str)
     analysis_error = Signal(str)
+    performance_ready = Signal(float, float, float, float)
     finished = Signal()
 
     def __init__(
@@ -120,7 +128,7 @@ class CameraWorker(QObject):
         try:
             import cv2
         except ImportError:
-            self.camera_status.emit(False, "Не установлен opencv-python")
+            self.camera_status.emit(False, "Не установлен OpenCV")
             self.finished.emit()
             return
 
@@ -149,6 +157,11 @@ class CameraWorker(QObject):
         last_analysis = 0.0
         last_preview = 0.0
         last_error: dict[str, float] = {}
+        performance_started = time.monotonic()
+        captured_frames = 0
+        analyzed_frames = 0
+        phone_time_total = 0.0
+        gaze_time_total = 0.0
 
         try:
             while not self._stop_event.is_set():
@@ -161,10 +174,14 @@ class CameraWorker(QObject):
 
                 with self._frame_lock:
                     self._latest_frame = frame
+                captured_frames += 1
 
                 now = time.monotonic()
                 if now - last_analysis >= analysis_interval:
                     events, errors = self.detectors.analyze(frame)
+                    analyzed_frames += 1
+                    phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
+                    gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
                     for event in events:
                         self.pipeline.submit(event, frame)
                     for message in errors:
@@ -172,6 +189,20 @@ class CameraWorker(QObject):
                             self.analysis_error.emit(message)
                             last_error[message] = now
                     last_analysis = now
+
+                performance_elapsed = now - performance_started
+                if performance_elapsed >= 5.0:
+                    self.performance_ready.emit(
+                        captured_frames / performance_elapsed,
+                        analyzed_frames / performance_elapsed,
+                        phone_time_total / max(1, analyzed_frames),
+                        gaze_time_total / max(1, analyzed_frames),
+                    )
+                    performance_started = now
+                    captured_frames = 0
+                    analyzed_frames = 0
+                    phone_time_total = 0.0
+                    gaze_time_total = 0.0
 
                 if now - last_preview >= preview_interval:
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -187,10 +218,152 @@ class CameraWorker(QObject):
                     last_preview = now
                 QThread.msleep(2)
         finally:
+            self.detectors.close()
             capture.release()
             self._capture = None
             self.camera_status.emit(False, "Камера остановлена")
             self.finished.emit()
+
+
+class TeacherReviewDialog(QDialog):
+    """End-of-session evidence review for the teacher."""
+
+    def __init__(
+        self,
+        *,
+        database_path: Any,
+        session_id: str,
+        events: list[StoredEvent],
+        final_risk: float,
+        test_score: tuple[int, int],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.database_path = database_path
+        self.session_id = session_id
+        self.setWindowTitle("Итоги сессии · Проверка преподавателем")
+        self.resize(900, 720)
+        self.setModal(True)
+        self.setStyleSheet(
+            """
+            QDialog, QWidget { background: #0b1020; color: #e8edf7; }
+            QFrame#reviewCard { background: #121a2d; border: 1px solid #26334f;
+                                border-radius: 12px; }
+            QLabel#reviewHeading { font-size: 24px; font-weight: 700; }
+            QPushButton { border: 0; border-radius: 9px; padding: 12px 18px;
+                          color: white; font-weight: 700; }
+            QPushButton#cheated { background: #c94f5d; }
+            QPushButton#notCheated { background: #279b78; }
+            QScrollArea { border: 0; }
+            """
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(14)
+        heading = QLabel("Итоги сессии")
+        heading.setObjectName("reviewHeading")
+        root.addWidget(heading)
+
+        score = QLabel(f"Результат теста: {test_score[0]} из {test_score[1]}")
+        root.addWidget(score)
+        risk = QLabel(f"Итоговый уровень риска: {final_risk:.1f} из 100")
+        risk.setStyleSheet(
+            f"font-size:18px; font-weight:700; color:{self._risk_color(final_risk)};"
+        )
+        root.addWidget(risk)
+
+        timeline_title = QLabel(f"Таймлайн нарушений · {len(events)} событий")
+        timeline_title.setStyleSheet("font-size:16px; font-weight:700;")
+        root.addWidget(timeline_title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        timeline = QWidget()
+        timeline_layout = QVBoxLayout(timeline)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setSpacing(10)
+        if not events:
+            empty = QLabel("Нарушения не зафиксированы")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            timeline_layout.addWidget(empty)
+        for stored in events:
+            timeline_layout.addWidget(self._event_card(stored))
+        timeline_layout.addStretch(1)
+        scroll.setWidget(timeline)
+        root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout()
+        cheated = QPushButton("Списывал")
+        cheated.setObjectName("cheated")
+        cheated.clicked.connect(lambda: self._save_verdict("cheated"))
+        not_cheated = QPushButton("Не списывал")
+        not_cheated.setObjectName("notCheated")
+        not_cheated.clicked.connect(lambda: self._save_verdict("not_cheated"))
+        actions.addWidget(cheated)
+        actions.addWidget(not_cheated)
+        root.addLayout(actions)
+
+    @staticmethod
+    def _risk_color(value: float) -> str:
+        if value > RISK_RED_ABOVE:
+            return "#ef6262"
+        if value >= RISK_YELLOW_FROM:
+            return "#f0c45d"
+        return "#55d6a9"
+
+    def _event_card(self, stored: StoredEvent) -> QFrame:
+        card = QFrame()
+        card.setObjectName("reviewCard")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(12, 12, 12, 12)
+        preview = QLabel("Без снимка")
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview.setFixedSize(180, 105)
+        preview.setStyleSheet("background:#070b15; border-radius:8px; color:#70809e;")
+        if stored.screenshot_path:
+            pixmap = QPixmap(stored.screenshot_path)
+            if not pixmap.isNull():
+                preview.setText("")
+                preview.setPixmap(
+                    pixmap.scaled(
+                        preview.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+        row.addWidget(preview)
+
+        text = QVBoxLayout()
+        event_name = stored.event.type.value
+        title = QLabel(EVENT_LABELS.get(event_name, event_name))
+        title.setStyleSheet("font-size:16px; font-weight:700;")
+        text.addWidget(title)
+        local_time = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
+        text.addWidget(QLabel(f"Время: {local_time} · Источник: {stored.event.source}"))
+        text.addWidget(
+            QLabel(
+                f"Добавлено: +{stored.weight:g} · "
+                f"уровень после события: {stored.risk_total:.1f}"
+            )
+        )
+        if stored.event.confidence is not None:
+            text.addWidget(QLabel(f"Уверенность модели: {stored.event.confidence:.0%}"))
+        text.addStretch(1)
+        row.addLayout(text, 1)
+        return card
+
+    def _save_verdict(self, verdict: str) -> None:
+        try:
+            record_teacher_verdict(self.database_path, self.session_id, verdict)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Не удалось сохранить решение",
+                f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -219,6 +392,9 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._render_question()
+        self.risk_timer = QTimer(self)
+        self.risk_timer.timeout.connect(self._refresh_risk)
+        self.risk_timer.start(1000)
         QTimer.singleShot(0, self.start_monitoring)
 
     def _build_ui(self) -> None:
@@ -328,18 +504,20 @@ class MainWindow(QMainWindow):
         self.phone_status_label = QLabel("○ Телефон: ожидание")
         self.gaze_status_label = QLabel("○ Взгляд: ожидание")
         self.security_status_label = QLabel("○ Защита: ожидание")
+        self.performance_status_label = QLabel("○ Производительность: замер…")
         for label in (
             self.camera_status_label,
             self.phone_status_label,
             self.gaze_status_label,
             self.security_status_label,
+            self.performance_status_label,
         ):
             label.setObjectName("status")
             camera_layout.addWidget(label)
         layout.addWidget(camera_card)
 
         risk_card, risk_layout = self._card()
-        risk_title = QLabel("Риск сессии")
+        risk_title = QLabel("Уровень риска")
         risk_title.setObjectName("question")
         risk_layout.addWidget(risk_title)
         self.risk_bar = QProgressBar()
@@ -399,15 +577,31 @@ class MainWindow(QMainWindow):
             self.answers.get(index) == question.correct_index
             for index, question in enumerate(QUESTIONS)
         )
-        QMessageBox.information(
-            self,
-            "Тест завершён",
-            f"Результат: {correct} из {len(QUESTIONS)}.\n"
-            f"Риск сессии: {self.risk_bar.value()} из 100.",
-        )
         self.next_button.setEnabled(False)
         self.progress_label.setText("Тест завершён · контроль выключен")
         self.shutdown()
+        final_risk = self.pipeline.current_risk().total
+        try:
+            events = load_session_events(
+                self.config.database_path,
+                self.pipeline.session_id,
+            )
+        except Exception as exc:
+            events = []
+            self._show_runtime_error(
+                f"Не удалось загрузить таймлайн: {type(exc).__name__}: {exc}"
+            )
+        self.hide()
+        review = TeacherReviewDialog(
+            database_path=self.config.database_path,
+            session_id=self.pipeline.session_id,
+            events=events,
+            final_risk=final_risk,
+            test_score=(correct, len(QUESTIONS)),
+            parent=self,
+        )
+        review.exec()
+        self.close()
 
     def start_monitoring(self) -> None:
         enabled, message = self.security.enable()
@@ -421,6 +615,7 @@ class MainWindow(QMainWindow):
         self.camera_worker.camera_status.connect(self._on_camera_status)
         self.camera_worker.module_status.connect(self._on_module_status)
         self.camera_worker.analysis_error.connect(self._show_runtime_error)
+        self.camera_worker.performance_ready.connect(self._on_performance)
         self.camera_worker.finished.connect(self.camera_thread.quit)
         self.camera_thread.start()
 
@@ -460,24 +655,46 @@ class MainWindow(QMainWindow):
         title = "Телефон" if status.name == "phone" else "Взгляд"
         self._set_status(label, title, status.loaded, status.message)
 
-    def _on_event_recorded(self, stored: StoredEvent) -> None:
-        data = stored.to_dict()
-        risk = int(data["risk_total"])
-        self.risk_bar.setValue(risk)
-        self.risk_bar.setFormat(f"{risk} / 100")
-        if risk >= 60:
+    def _on_performance(
+        self,
+        camera_fps: float,
+        analysis_fps: float,
+        phone_ms: float,
+        gaze_ms: float,
+    ) -> None:
+        total_ms = phone_ms + gaze_ms
+        message = (
+            f"камера {camera_fps:.1f} FPS · анализ {analysis_fps:.1f} FPS · "
+            f"YOLO {phone_ms:.0f} мс · MediaPipe {gaze_ms:.0f} мс · "
+            f"вместе {total_ms:.0f} мс"
+        )
+        self._set_status(self.performance_status_label, "Скорость", True, message)
+
+    def _update_risk_display(self, risk: float) -> None:
+        self.risk_bar.setValue(max(0, min(100, round(risk))))
+        self.risk_bar.setFormat(f"{risk:.1f} / 100")
+        if risk > RISK_RED_ABOVE:
             chunk = "#ef6262"
-        elif risk >= 25:
-            chunk = "#f0a45d"
+        elif risk >= RISK_YELLOW_FROM:
+            chunk = "#f0c45d"
         else:
             chunk = "#55d6a9"
         self.risk_bar.setStyleSheet(
             f"QProgressBar::chunk {{ background: {chunk}; border-radius: 7px; }}"
         )
+
+    def _refresh_risk(self) -> None:
+        if not self._shutdown_done:
+            self._update_risk_display(self.pipeline.current_risk().total)
+
+    def _on_event_recorded(self, stored: StoredEvent) -> None:
+        data = stored.to_dict()
+        risk = float(data["risk_total"])
+        self._update_risk_display(risk)
         event_name = str(data["type"])
         label = EVENT_LABELS.get(event_name, event_name)
         time_label = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
-        self.event_list.insertItem(0, f"{time_label}  {label}  +{stored.weight}")
+        self.event_list.insertItem(0, f"{time_label}  {label}  +{stored.weight:g}")
         while self.event_list.count() > 8:
             self.event_list.takeItem(self.event_list.count() - 1)
 
@@ -488,6 +705,8 @@ class MainWindow(QMainWindow):
         if self._shutdown_done:
             return
         self._shutdown_done = True
+        if hasattr(self, "risk_timer"):
+            self.risk_timer.stop()
         try:
             if self.camera_worker is not None:
                 self.camera_worker.stop()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from config import AppConfig
@@ -20,6 +21,8 @@ def main() -> int:
         return 2
 
     try:
+        os.environ.setdefault("PROCTOR_PHONE_MODULE", "detection.phone_detector")
+        os.environ.setdefault("PROCTOR_GAZE_MODULE", "gaze_analyzer")
         config = AppConfig.from_env()
         config.ensure_directories()
         return run_application(config)

@@ -7,10 +7,14 @@ episodes, not proof of cheating. Use one GazeAnalyzer per camera/session.
 from __future__ import annotations
 
 import math
+import os
+import shutil
+import tempfile
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import cv2
@@ -36,6 +40,36 @@ HEAD_MODEL_POINTS = np.array(
     dtype=np.float64,
 )
 HEAD_MODEL_POINTS.setflags(write=False)
+
+
+def _prepare_mediapipe_resources_for_windows(mp: Any) -> None:
+    """Work around MediaPipe 0.10.21 failing on non-ASCII Windows paths."""
+
+    if os.name != "nt":
+        return
+    from mediapipe.python import solution_base
+
+    package_parent = Path(mp.__file__).resolve().parent.parent
+    try:
+        str(package_parent).encode("ascii")
+        return
+    except UnicodeEncodeError:
+        pass
+
+    version = getattr(mp, "__version__", "0.10.21").replace(".", "_")
+    cache_root = Path(tempfile.gettempdir()) / f"proctoring_mediapipe_{version}"
+    source_modules = package_parent / "mediapipe" / "modules"
+    cached_modules = cache_root / "mediapipe" / "modules"
+    required_graph = (
+        cached_modules / "face_landmark" / "face_landmark_front_cpu.binarypb"
+    )
+    if not required_graph.exists():
+        shutil.copytree(source_modules, cached_modules, dirs_exist_ok=True)
+
+    fake_solution_file = cache_root / "mediapipe" / "python" / "solution_base.py"
+    fake_solution_file.parent.mkdir(parents=True, exist_ok=True)
+    # SolutionBase derives its resource root from this module global.
+    solution_base.__file__ = str(fake_solution_file)
 
 
 @dataclass(frozen=True)
@@ -258,6 +292,7 @@ class GazeAnalyzer:
                 raise RuntimeError(
                     "Face Mesh requires mediapipe==0.10.21; install this project's requirements.txt"
                 )
+            _prepare_mediapipe_resources_for_windows(mp)
             face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
                 max_num_faces=self.config.max_num_faces,

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from events import ProctorEvent
+from events import EventType, ProctorEvent
 
 
 SCHEMA = """
@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at TEXT NOT NULL,
     ended_at TEXT,
     status TEXT NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}'
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    final_risk REAL NOT NULL DEFAULT 0,
+    teacher_verdict TEXT,
+    reviewed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -31,8 +34,8 @@ CREATE TABLE IF NOT EXISTS events (
     occurred_at TEXT NOT NULL,
     source TEXT NOT NULL,
     confidence REAL,
-    weight INTEGER NOT NULL,
-    risk_total INTEGER NOT NULL,
+    weight REAL NOT NULL,
+    risk_total REAL NOT NULL,
     details_json TEXT NOT NULL,
     screenshot_path TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -46,8 +49,8 @@ ON events(session_id, occurred_at);
 @dataclass(frozen=True, slots=True)
 class StoredEvent:
     event: ProctorEvent
-    weight: int
-    risk_total: int
+    weight: float
+    risk_total: float
     screenshot_path: str | None
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +73,21 @@ class EventStore:
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.database_path)
         self.connection.executescript(SCHEMA)
+        self._migrate_sessions_table()
+
+    def _migrate_sessions_table(self) -> None:
+        columns = {
+            row[1] for row in self.connection.execute("PRAGMA table_info(sessions)")
+        }
+        migrations = {
+            "final_risk": "ALTER TABLE sessions ADD COLUMN final_risk REAL NOT NULL DEFAULT 0",
+            "teacher_verdict": "ALTER TABLE sessions ADD COLUMN teacher_verdict TEXT",
+            "reviewed_at": "ALTER TABLE sessions ADD COLUMN reviewed_at TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                self.connection.execute(statement)
+        self.connection.commit()
 
     def start_session(self, session_id: str, metadata: dict[str, Any] | None = None) -> None:
         self.connection.execute(
@@ -86,10 +104,24 @@ class EventStore:
         )
         self.connection.commit()
 
-    def finish_session(self, session_id: str, status: str = "completed") -> None:
+    def finish_session(
+        self,
+        session_id: str,
+        status: str = "completed",
+        final_risk: float = 0.0,
+    ) -> None:
         self.connection.execute(
-            "UPDATE sessions SET ended_at = ?, status = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), status, session_id),
+            """
+            UPDATE sessions
+            SET ended_at = ?, status = ?, final_risk = ?
+            WHERE id = ?
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                status,
+                final_risk,
+                session_id,
+            ),
         )
         self.connection.commit()
 
@@ -112,8 +144,8 @@ class EventStore:
         event: ProctorEvent,
         *,
         session_id: str,
-        weight: int,
-        risk_total: int,
+        weight: float,
+        risk_total: float,
         frame: Any = None,
     ) -> StoredEvent:
         screenshot_path: str | None = None
@@ -157,4 +189,65 @@ class EventStore:
 
     def close(self) -> None:
         self.connection.close()
+
+
+def record_teacher_verdict(
+    database_path: Path,
+    session_id: str,
+    verdict: str,
+) -> None:
+    if verdict not in {"cheated", "not_cheated"}:
+        raise ValueError("unsupported teacher verdict")
+    connection = sqlite3.connect(database_path)
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE sessions
+            SET teacher_verdict = ?, reviewed_at = ?
+            WHERE id = ?
+            """,
+            (verdict, datetime.now(timezone.utc).isoformat(), session_id),
+        )
+        if cursor.rowcount != 1:
+            raise LookupError(f"session not found: {session_id}")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def load_session_events(database_path: Path, session_id: str) -> list[StoredEvent]:
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT id, event_type, occurred_at, source, confidence,
+                   details_json, weight, risk_total, screenshot_path
+            FROM events
+            WHERE session_id = ?
+            ORDER BY occurred_at
+            """,
+            (session_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    result: list[StoredEvent] = []
+    for row in rows:
+        event = ProctorEvent(
+            event_id=row[0],
+            type=EventType(row[1]),
+            occurred_at=datetime.fromisoformat(row[2]),
+            source=row[3],
+            confidence=row[4],
+            details=json.loads(row[5]),
+        )
+        result.append(
+            StoredEvent(
+                event=event,
+                weight=float(row[6]),
+                risk_total=float(row[7]),
+                screenshot_path=row[8],
+            )
+        )
+    return result
 

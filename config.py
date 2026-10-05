@@ -9,6 +9,27 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Risk policy. Keep these values here so the team can tune the demo without
+# touching the scoring implementation.
+RISK_WEIGHTS: dict[str, float] = {
+    "phone_detected": 25.0,
+    "phone_aimed_at_screen": 40.0,
+    "multiple_faces": 30.0,
+    "no_face": 20.0,
+    "gaze_side": 10.0,
+    "gaze_down": 10.0,
+    "too_close_to_camera": 10.0,
+    "window_switched": 15.0,
+    "hotkey_blocked": 15.0,
+    "suspicious_process": 15.0,
+}
+RISK_COMBINATION_WINDOW_SECONDS = 10.0
+RISK_COMBINATION_MULTIPLIER = 1.5
+RISK_DECAY_PER_SECOND = 0.2
+RISK_MAXIMUM = 100.0
+RISK_YELLOW_FROM = 30.0
+RISK_RED_ABOVE = 60.0
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -49,7 +70,9 @@ class AppConfig:
             data_dir=data_dir,
             database_path=data_dir / "proctoring.db",
             screenshots_dir=data_dir / "screenshots",
-            phone_module=os.getenv("PROCTOR_PHONE_MODULE", "phone_detector"),
+            phone_module=os.getenv(
+                "PROCTOR_PHONE_MODULE", "detection.phone_detector"
+            ),
             gaze_module=os.getenv("PROCTOR_GAZE_MODULE", "gaze_analyzer"),
             security_module=os.getenv(
                 "PROCTOR_SECURITY_MODULE", "environment_protection"
