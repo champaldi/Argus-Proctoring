@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
         self.close()
 
     def start_monitoring(self) -> None:
-        enabled, message = self.security.enable()
+        enabled, message = self.security.enable(hwnd=int(self.winId()))
         self._set_status(self.security_status_label, "Защита", enabled, message)
 
         self.camera_thread = QThread(self)

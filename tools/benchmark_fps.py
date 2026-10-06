@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("PROCTOR_PHONE_MODULE", "detection.phone_detector")
-os.environ.setdefault("PROCTOR_GAZE_MODULE", "gaze_analyzer")
+os.environ.setdefault("PROCTOR_GAZE_MODULE", "gaze")
 
 from core.detectors import DetectorCollection  # noqa: E402
 

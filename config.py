@@ -73,7 +73,7 @@ class AppConfig:
             phone_module=os.getenv(
                 "PROCTOR_PHONE_MODULE", "detection.phone_detector"
             ),
-            gaze_module=os.getenv("PROCTOR_GAZE_MODULE", "gaze_analyzer"),
+            gaze_module=os.getenv("PROCTOR_GAZE_MODULE", "gaze"),
             security_module=os.getenv(
                 "PROCTOR_SECURITY_MODULE", "environment_protection"
             ),

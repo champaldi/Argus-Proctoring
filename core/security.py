@@ -24,15 +24,39 @@ class SecurityAdapter:
         for event in normalize_events(raw_event, default_source="security"):
             self.event_sink(event)
 
-    def enable(self) -> tuple[bool, str]:
+    def enable(self, *, hwnd: int | None = None) -> tuple[bool, str]:
         try:
             self._module = importlib.import_module(self.module_name)
             enable = getattr(self._module, "enable")
             parameters = inspect.signature(enable).parameters
-            if parameters:
-                enable(self._receive)
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            args: list[Any] = []
+            kwargs: dict[str, Any] = {}
+            if "callback" in parameters or accepts_kwargs:
+                kwargs["callback"] = self._receive
             else:
-                enable()
+                callback_parameter = next(
+                    (
+                        parameter
+                        for name, parameter in parameters.items()
+                        if name not in {"hwnd", "config"}
+                        and parameter.kind
+                        in {
+                            inspect.Parameter.POSITIONAL_ONLY,
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.VAR_POSITIONAL,
+                        }
+                    ),
+                    None,
+                )
+                if callback_parameter is not None:
+                    args.append(self._receive)
+            if hwnd is not None and ("hwnd" in parameters or accepts_kwargs):
+                kwargs["hwnd"] = hwnd
+            enable(*args, **kwargs)
             self._enabled = True
             return True, f"{self.module_name}.enable"
         except Exception as exc:

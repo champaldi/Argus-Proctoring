@@ -22,7 +22,7 @@ def main() -> int:
 
     try:
         os.environ.setdefault("PROCTOR_PHONE_MODULE", "detection.phone_detector")
-        os.environ.setdefault("PROCTOR_GAZE_MODULE", "gaze_analyzer")
+        os.environ.setdefault("PROCTOR_GAZE_MODULE", "gaze")
         config = AppConfig.from_env()
         config.ensure_directories()
         return run_application(config)
