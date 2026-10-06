@@ -6,7 +6,11 @@ import os
 import sys
 from ctypes import WinDLL, wintypes
 
-from .input_hooks import LowLevelInputMonitor, decode_keyboard_input, decode_mouse_input
+from .input_hooks import (
+    LowLevelInputMonitor,
+    decode_keyboard_input,
+    decode_mouse_input,
+)
 
 
 WDA_NONE = 0x00

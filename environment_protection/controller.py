@@ -146,7 +146,12 @@ class Protection:
                 if not previous.stopped.is_set():
                     return
                 self._cleanup(previous)
-                if previous.remove_hook or any(t.is_alive() for t in previous.threads):
+                if (
+                    previous.remove_hook
+                    or previous.remove_input_hook
+                    or previous.capture_protected
+                    or any(t.is_alive() for t in previous.threads)
+                ):
                     raise RuntimeError("Previous protection session is still shutting down")
             target, pid = self.backend.resolve_target(hwnd)
             session = _Session(target, pid, callback, time.monotonic() + self.config.max_seconds)

@@ -26,9 +26,11 @@ class FakeDesktop:
         self.fail_remove = False
         self.modifiers = set()
         self.capture_succeeds = True
+        self.capture_release_succeeds = True
         self.capture_calls = []
         self.remote_session = False
         self.monitor_count_value = 1
+        self.fail_input_remove = False
 
     def resolve_target(self, hwnd):
         return (hwnd or 100), 10
@@ -42,7 +44,7 @@ class FakeDesktop:
 
     def release_capture(self, hwnd):
         self.capture_calls.append(("release", hwnd))
-        return True
+        return self.capture_release_succeeds
 
     def is_remote_session(self):
         return self.remote_session
@@ -61,6 +63,8 @@ class FakeDesktop:
         return self.remove_input_monitor
 
     def remove_input_monitor(self):
+        if self.fail_input_remove:
+            raise RuntimeError("input monitor removal failed")
         self.input_monitor = None
 
     def remove_hook(self):
@@ -256,6 +260,26 @@ class ProtectionTests(unittest.TestCase):
         self.assertIsNotNone(self.desktop.input_monitor)
         self.protection.disable()
         self.assertIsNone(self.desktop.input_monitor)
+
+    def test_restart_is_refused_until_input_monitor_cleanup_succeeds(self):
+        self.start()
+        self.desktop.fail_input_remove = True
+        self.protection.disable()
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.desktop.fail_input_remove = False
+        self.protection.disable()
+        self.start()
+
+    def test_restart_is_refused_until_capture_protection_is_released(self):
+        self.start()
+        self.desktop.capture_release_succeeds = False
+        self.protection.disable()
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.desktop.capture_release_succeeds = True
+        self.protection.disable()
+        self.start()
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()
