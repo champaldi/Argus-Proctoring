@@ -52,6 +52,7 @@ EVENT_LABELS = {
     "suspicious_process": "Обнаружен запрещённый процесс",
     "capture_protection_failed": "Не удалось скрыть окно от захвата",
     "remote_session": "Тест запущен через удалённую сессию",
+    "multiple_monitors": "Подключено несколько мониторов",
 }
 
 

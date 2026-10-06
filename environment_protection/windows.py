@@ -10,6 +10,7 @@ from ctypes import WinDLL, wintypes
 WDA_NONE = 0x00
 WDA_EXCLUDEFROMCAPTURE = 0x11
 SM_REMOTESESSION = 0x1000
+SM_CMONITORS = 80
 
 
 class WindowsBackend:
@@ -83,6 +84,9 @@ class WindowsBackend:
 
     def is_remote_session(self):
         return bool(self.user32.GetSystemMetrics(SM_REMOTESESSION))
+
+    def monitor_count(self):
+        return int(self.user32.GetSystemMetrics(SM_CMONITORS))
 
     def install_hook(self, callback):
         return self.keyboard.hook(callback, suppress=True)

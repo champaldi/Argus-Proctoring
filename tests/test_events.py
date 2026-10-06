@@ -53,6 +53,10 @@ class EventContractTests(unittest.TestCase):
         event = ProctorEvent.create("remote_session", source="security")
         self.assertEqual(event.type, EventType.REMOTE_SESSION)
 
+    def test_multiple_monitors_uses_shared_contract(self) -> None:
+        event = ProctorEvent.create("multiple_monitors", source="security")
+        self.assertEqual(event.type, EventType.MULTIPLE_MONITORS)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,10 @@ class RiskScorerTests(unittest.TestCase):
         update = self.scorer.add(self.event("remote_session"))
         self.assertEqual(update.weight, 30.0)
 
+    def test_multiple_monitors_has_presence_weight(self) -> None:
+        update = self.scorer.add(self.event("multiple_monitors"))
+        self.assertEqual(update.weight, 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()

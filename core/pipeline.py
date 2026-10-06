@@ -32,6 +32,7 @@ DEFAULT_COOLDOWNS: dict[EventType, float] = {
     EventType.SUSPICIOUS_PROCESS: 10.0,
     EventType.CAPTURE_PROTECTION_FAILED: 10.0,
     EventType.REMOTE_SESSION: 60.0,
+    EventType.MULTIPLE_MONITORS: 0.0,
 }
 
 

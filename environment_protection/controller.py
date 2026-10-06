@@ -99,6 +99,8 @@ class _Session:
     blocked_keys: set[int] = field(default_factory=set)
     seen_processes: set[tuple[int, float | None]] = field(default_factory=set)
     seen_services: set[str] = field(default_factory=set)
+    monitor_count: int | None = None
+    multiple_monitors_active: bool = False
     remove_hook: Callable | None = None
     capture_protected: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -192,6 +194,7 @@ class Protection:
             "last_error": session.error if session else None,
             "hwnd": session.hwnd if session else None,
             "capture_protected": bool(session and session.capture_protected),
+            "monitor_count": session.monitor_count if session else None,
         }
 
     def drain_events(self) -> list[dict[str, Any]]:
@@ -328,6 +331,18 @@ class Protection:
                 foreground = self.backend.foreground_window()
                 inside = self.backend.belongs_to_target(foreground, session.hwnd, session.pid)
                 now = time.monotonic()
+                monitor_count = self.backend.monitor_count()
+                session.monitor_count = monitor_count
+                if monitor_count > 1:
+                    if not session.multiple_monitors_active:
+                        self._emit(
+                            session,
+                            "multiple_monitors",
+                            monitor_count=monitor_count,
+                        )
+                    session.multiple_monitors_active = True
+                else:
+                    session.multiple_monitors_active = False
                 if inside:
                     outside = False
                     next_restore = 0.0

@@ -27,6 +27,7 @@ class FakeDesktop:
         self.capture_succeeds = True
         self.capture_calls = []
         self.remote_session = False
+        self.monitor_count_value = 1
 
     def resolve_target(self, hwnd):
         return (hwnd or 100), 10
@@ -44,6 +45,9 @@ class FakeDesktop:
 
     def is_remote_session(self):
         return self.remote_session
+
+    def monitor_count(self):
+        return self.monitor_count_value
 
     def install_hook(self, callback):
         if self.fail_install:
@@ -187,6 +191,20 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: bool(self.events)))
         self.assertEqual([event["type"] for event in self.events], ["remote_session"])
         self.assertEqual(self.events[0]["details"], {"protocol": "rdp"})
+
+    def test_multiple_monitors_emit_once_per_continuous_episode(self):
+        self.desktop.monitor_count_value = 2
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.events) == 1))
+        self.assertEqual(self.events[0]["type"], "multiple_monitors")
+        self.assertEqual(self.events[0]["details"], {"monitor_count": 2})
+        time.sleep(0.05)
+        self.assertEqual(len(self.events), 1)
+        self.desktop.monitor_count_value = 1
+        self.assertTrue(wait_for(lambda: self.protection.status()["monitor_count"] == 1))
+        self.desktop.monitor_count_value = 3
+        self.assertTrue(wait_for(lambda: len(self.events) == 2))
+        self.assertEqual(self.events[1]["details"], {"monitor_count": 3})
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()

@@ -46,6 +46,7 @@ def status():
             "last_error": None,
             "hwnd": None,
             "capture_protected": False,
+            "monitor_count": None,
         }
     return _protection.status()
 

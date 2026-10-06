@@ -123,3 +123,10 @@ class WindowsBackendTests(unittest.TestCase):
 
         self.assertTrue(self.backend.is_remote_session())
         self.backend.user32.GetSystemMetrics.assert_called_once_with(0x1000)
+
+    def test_monitor_count_uses_windows_display_monitor_metric(self):
+        self.backend.user32 = Mock()
+        self.backend.user32.GetSystemMetrics.return_value = 2
+
+        self.assertEqual(self.backend.monitor_count(), 2)
+        self.backend.user32.GetSystemMetrics.assert_called_once_with(80)
