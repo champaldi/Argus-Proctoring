@@ -82,6 +82,47 @@ class WindowsBackendTests(unittest.TestCase):
             remove()
         self.assertEqual(registrations, [unrelated])
 
+    def test_window_lock_sets_topmost_maximizes_and_unlock_clears_it(self):
+        gui = Mock()
+        gui.GetWindowRect.return_value = (100, 100, 900, 700)
+        gui.IsWindow.return_value = True
+        api = Mock()
+        api.GetMonitorInfo.return_value = {"Monitor": (0, 0, 1920, 1080)}
+        user32 = Mock()
+        con = self.backend.con
+        with (
+            patch.object(self.backend, "gui", gui),
+            patch.object(self.backend, "api", api),
+            patch.object(self.backend, "user32", user32),
+        ):
+            self.assertTrue(self.backend.lock_window(100))
+            self.assertTrue(self.backend.unlock_window(100))
+
+        first, second = gui.SetWindowPos.call_args_list
+        self.assertEqual(first.args[:2], (100, con.HWND_TOPMOST))
+        self.assertEqual(second.args[:2], (100, con.HWND_NOTOPMOST))
+        user32.ShowWindowAsync.assert_called_once_with(100, con.SW_MAXIMIZE)
+
+    def test_window_lock_keeps_an_already_full_screen_window_as_is(self):
+        gui = Mock()
+        gui.GetWindowRect.return_value = (0, 0, 1920, 1080)
+        api = Mock()
+        api.GetMonitorInfo.return_value = {"Monitor": (0, 0, 1920, 1080)}
+        user32 = Mock()
+        with (
+            patch.object(self.backend, "gui", gui),
+            patch.object(self.backend, "api", api),
+            patch.object(self.backend, "user32", user32),
+        ):
+            self.assertTrue(self.backend.lock_window(100))
+        user32.ShowWindowAsync.assert_not_called()
+
+    def test_window_lock_failure_is_reported_as_false(self):
+        gui = Mock()
+        gui.SetWindowPos.side_effect = RuntimeError("denied")
+        with patch.object(self.backend, "gui", gui):
+            self.assertFalse(self.backend.lock_window(100))
+
     def test_capture_affinity_uses_exclusion_and_restores_normal_rendering(self):
         user32 = Mock()
         user32.SetWindowDisplayAffinity.return_value = 1
