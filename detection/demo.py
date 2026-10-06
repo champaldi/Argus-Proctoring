@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 
 from events import EventType
+from core.image_io import write_image
 from .phone_detector import PERSON_CLASS_ID, PhoneDetector
 
 
@@ -85,8 +86,7 @@ def main() -> int:
                 folder = SAMPLES_DIR / ("phone" if key == ord("p") else "not_phone")
                 folder.mkdir(parents=True, exist_ok=True)
                 path = folder / f"{datetime.now():%Y%m%d_%H%M%S_%f}.jpg"
-                if not cv2.imwrite(str(path), frame):
-                    raise OSError(f"Не удалось сохранить кадр: {path}")
+                write_image(path, frame)
                 print(f"Сохранён кадр: {path}", flush=True)
     finally:
         try:

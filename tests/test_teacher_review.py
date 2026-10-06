@@ -2,13 +2,14 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from config import AppConfig
@@ -90,6 +91,11 @@ class TeacherReviewDialogTests(unittest.TestCase):
                     self.assertIn("1234", window.event_list.item(0).text())
                 finally:
                     window.close()
+                    for _ in range(300):
+                        if window._shutdown_done:
+                            break
+                        QTest.qWait(10)
+                    self.assertTrue(window._shutdown_done)
 
     def test_teacher_verdict_is_saved_from_review_screen(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

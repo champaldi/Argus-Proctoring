@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -186,3 +187,35 @@ class WindowsBackendTests(unittest.TestCase):
             self.assertTrue(callable(remove))
         finally:
             remove()
+
+    def test_input_monitor_startup_timeout_stops_its_worker(self):
+        from environment_protection.input_hooks import LowLevelInputMonitor
+
+        monitor = LowLevelInputMonitor(Mock(), Mock(), lambda event: None)
+        entered = threading.Event()
+
+        def delayed_run():
+            entered.set()
+            monitor._stop_requested.wait(2)
+
+        self.backend.input_monitor_factory = lambda *args: monitor
+        with (
+            patch.object(monitor, "_run", delayed_run),
+            patch.object(monitor._ready, "wait", return_value=False),
+        ):
+            try:
+                with self.assertRaises(TimeoutError):
+                    self.backend.install_input_monitor(lambda details: None)
+                self.assertTrue(entered.wait(1))
+                self.assertTrue(monitor._stop_requested.is_set())
+                self.assertFalse(monitor._thread.is_alive())
+            finally:
+                monitor.stop()
+
+    def test_input_monitor_cleanup_failure_keeps_original_startup_error(self):
+        monitor = Mock()
+        monitor.start.side_effect = TimeoutError("startup timed out")
+        monitor.stop.side_effect = RuntimeError("cleanup timed out")
+        self.backend.input_monitor_factory = lambda *args: monitor
+        with self.assertRaisesRegex(TimeoutError, "startup timed out"):
+            self.backend.install_input_monitor(lambda details: None)

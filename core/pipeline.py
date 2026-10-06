@@ -89,23 +89,26 @@ class EventPipeline:
     def submit(self, event: ProctorEvent, frame: Any = None) -> bool:
         if self._thread is None or self._stopping:
             return False
+        safe_frame = frame.copy() if frame is not None and hasattr(frame, "copy") else frame
         now = time.monotonic()
         with self._dedupe_lock:
+            # Frame copying may overlap shutdown. Accept and enqueue atomically
+            # with stop(), so a successful submit is always drained by the writer.
+            if self._thread is None or self._stopping:
+                return False
             last_seen = self._last_seen.get(event.type)
             cooldown = self.cooldowns.get(event.type, 0.0)
             if last_seen is not None and now - last_seen < cooldown:
                 return False
-            self._last_seen[event.type] = now
-
-        safe_frame = frame.copy() if frame is not None and hasattr(frame, "copy") else frame
-        try:
-            self._queue.put_nowait(_QueuedEvent(event=event, frame=safe_frame))
-        except queue.Full:
-            with self._dedupe_lock:
-                self._last_seen.pop(event.type, None)
-            self._report_error("Очередь событий переполнена; событие пропущено")
-            return False
-        return True
+            try:
+                self._queue.put_nowait(_QueuedEvent(event=event, frame=safe_frame))
+            except queue.Full:
+                pass
+            else:
+                self._last_seen[event.type] = now
+                return True
+        self._report_error("Очередь событий переполнена; событие пропущено")
+        return False
 
     def current_risk(self) -> RiskSnapshot:
         return self._scorer.current()
@@ -114,18 +117,26 @@ class EventPipeline:
         """Highest risk reached in this session; this is what gets stored."""
         return self._scorer.peak()
 
-    def stop(self, timeout: float = 5.0) -> None:
-        if self._thread is None:
-            return
-        self._stopping = True
-        try:
-            self._queue.put(None, timeout=timeout)
-        except queue.Full:
-            self._report_error("Не удалось корректно закрыть очередь событий")
-        self._thread.join(timeout=timeout)
-        if self._thread.is_alive():
-            self._report_error("Хранилище событий не завершилось вовремя")
-        self._thread = None
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Drain accepted events; return whether the writer has finished.
+
+        A zero timeout requests shutdown and polls completion without reporting
+        an error, so the UI can keep processing events while storage drains.
+        """
+        with self._dedupe_lock:
+            thread = self._thread
+            if thread is None:
+                return True
+            self._stopping = True
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            if timeout > 0:
+                self._report_error("Хранилище событий не завершилось вовремя")
+            return False
+        with self._dedupe_lock:
+            if self._thread is thread:
+                self._thread = None
+        return True
 
     def _report_error(self, message: str) -> None:
         if self.on_error is not None:
@@ -144,7 +155,13 @@ class EventPipeline:
         self._ready.set()
         try:
             while True:
-                queued = self._queue.get()
+                try:
+                    queued = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    with self._dedupe_lock:
+                        if self._stopping and self._queue.empty():
+                            break
+                    continue
                 if queued is None:
                     self._queue.task_done()
                     break

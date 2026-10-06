@@ -39,11 +39,12 @@ class EvaluateTests(unittest.TestCase):
 
     def test_verify_and_save_debug(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary) / "Проверка"
             for folder in ("phone", "not_phone"):
-                (root / folder).mkdir()
-                self.assertTrue(cv2.imwrite(str(root / folder / "a.jpg"),
-                                            np.zeros((100, 100, 3), dtype=np.uint8)))
+                (root / folder).mkdir(parents=True)
+                ok, encoded = cv2.imencode(".jpg", np.zeros((100, 100, 3), dtype=np.uint8))
+                self.assertTrue(ok)
+                (root / folder / "a.jpg").write_bytes(encoded.tobytes())
             model = FakeModel([[box(67)], [box(67)]])
             scores = iter([0.8, 0.19])
             output = io.StringIO()

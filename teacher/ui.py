@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.storage import StoredEvent
+from core.event_presentation import EVENT_LABELS, application_details
 from .data import (
     Review,
     ReviewStore,
@@ -48,22 +49,6 @@ from .data import (
 
 ZONE_COLORS = {"low": "#55d6a9", "medium": "#f0c45d", "high": "#ef6262"}
 ZONE_LABELS = {"low": "зелёная", "medium": "жёлтая", "high": "красная"}
-EVENT_LABELS = {
-    "phone_detected": "Обнаружен телефон",
-    "phone_aimed_at_screen": "Телефон направлен на экран",
-    "gaze_down": "Долгий взгляд вниз",
-    "gaze_side": "Долгий взгляд в сторону",
-    "no_face": "Лицо не обнаружено",
-    "multiple_faces": "В кадре несколько лиц",
-    "too_close_to_camera": "Слишком близко к камере",
-    "hotkey_blocked": "Заблокирована комбинация клавиш",
-    "window_switched": "Переключение окна",
-    "suspicious_process": "Обнаружен запрещённый процесс",
-    "capture_protection_failed": "Не удалось скрыть окно от захвата",
-    "remote_session": "Тест запущен через удалённую сессию",
-    "multiple_monitors": "Подключено несколько мониторов",
-    "injected_input": "Обнаружен программно внедрённый ввод",
-}
 MOMENT_LABELS = {
     "phone_detected": "Телефон",
     "phone_aimed_at_screen": "Телефон у экрана",
@@ -84,7 +69,8 @@ def _duration_text(seconds: float) -> str:
 
 def _event_name(stored: StoredEvent) -> str:
     name = stored.event.type.value
-    return EVENT_LABELS.get(name, name)
+    title = EVENT_LABELS.get(name, name)
+    return "\n".join([title, *application_details(stored.event)])
 
 
 def _risk_color(score: float) -> str:
@@ -437,6 +423,8 @@ class TeacherWindow(QMainWindow):
             "Время", "Нарушение", "Вес", "Длительность", "Источник", "Ложное срабатывание",
         ))
         event_table.verticalHeader().setVisible(False)
+        event_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        event_table.verticalHeader().setMinimumSectionSize(40)
         event_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         event_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         event_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -450,7 +438,9 @@ class TeacherWindow(QMainWindow):
                 stored.event.source,
             )
             for column, value in enumerate(values):
-                event_table.setItem(row, column, QTableWidgetItem(value))
+                cell = QTableWidgetItem(value)
+                cell.setToolTip(value)
+                event_table.setItem(row, column, cell)
             flag = QTableWidgetItem()
             flag.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             flag.setData(Qt.ItemDataRole.UserRole, stored.event.event_id)
@@ -459,12 +449,11 @@ class TeacherWindow(QMainWindow):
                 else Qt.CheckState.Unchecked
             )
             event_table.setItem(row, 5, flag)
-            event_table.setRowHeight(row, 40)
         event_table.blockSignals(False)
         event_table.itemChanged.connect(
             lambda item: self._event_flag_changed(session, item)
         )
-        event_table.setMinimumHeight(min(450, max(90, 42 * (len(session.events) + 1))))
+        event_table.setMinimumHeight(min(450, max(140, 60 * (len(session.events) + 1))))
         events_layout.addWidget(event_table)
         root.addWidget(events_card)
 
@@ -508,7 +497,9 @@ class TeacherWindow(QMainWindow):
     def _frame_pixmap(self, stored: StoredEvent) -> QPixmap:
         if stored.screenshot_path:
             path = Path(stored.screenshot_path)
-            if not path.is_absolute():
+            # Older EventStore versions wrote paths relative to the launch CWD;
+            # imported journals may instead use paths relative to the database.
+            if not path.is_absolute() and not path.is_file():
                 path = self.database_path.parent / path
             pixmap = QPixmap(str(path))
             if not pixmap.isNull():

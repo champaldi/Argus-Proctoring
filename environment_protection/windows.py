@@ -101,7 +101,16 @@ class WindowsBackend:
 
     def install_input_monitor(self, callback):
         monitor = self.input_monitor_factory(self.user32, self.kernel32, callback)
-        monitor.start()
+        try:
+            monitor.start()
+        except BaseException:
+            # A timeout can leave initialization running before the caller has
+            # received its cleanup handle. Request shutdown even in that case.
+            try:
+                monitor.stop()
+            except Exception:
+                pass
+            raise
         return monitor.stop
 
     def target_exists(self, hwnd, pid):

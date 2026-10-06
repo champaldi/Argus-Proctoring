@@ -10,6 +10,7 @@ from typing import Any, Callable, TextIO
 
 import cv2
 import numpy as np
+from core.image_io import read_image, write_image
 
 from .phone_detector import (
     PHONE_CONFIDENCE,
@@ -56,7 +57,7 @@ def evaluate_samples(
         folder = samples_dir / folder_name
         paths = sorted(path for path in folder.glob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
         for path in paths:
-            frame = cv2.imread(str(path))
+            frame = read_image(path)
             if frame is None:
                 raise ValueError(f"Не удалось прочитать изображение: {path}")
             result = analyze_frame(
@@ -105,8 +106,7 @@ def evaluate_samples(
                     cv2.putText(debug_frame, label, (max(0, x1), max(15, y1 - 5)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 debug_path = debug_dir / f"{folder_name}_{path.name}"
-                if not cv2.imwrite(str(debug_path), debug_frame):
-                    raise OSError(f"Не удалось сохранить: {debug_path}")
+                write_image(debug_path, debug_frame)
             print(f"{folder_name}/{path.name}: "
                   + ("; ".join(descriptions) if descriptions else "нет рамок телефона"),
                   file=output)

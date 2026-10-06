@@ -34,6 +34,9 @@ CLIP-веса хранятся в пользовательском кэше Hugg
 - `detection/phone_detector.py` — YOLOv8, CLIP-проверка телефона и наведение на экран;
 - `gaze/` — MediaPipe Face Mesh, голова, взгляд, число лиц и расстояние до камеры;
 - `environment_protection/` — блокировка сочетаний, контроль окна и процессов;
+- `teacher/` — отдельная панель преподавателя, пересчёт риска и решения;
+- `core/event_presentation.py` — общие названия событий и сведения о приложениях;
+- `core/image_io.py` — чтение и запись изображений, включая пути с кириллицей;
 - `events.py` — единый контракт событий команды.
 
 Камера открывается только в `CameraWorker`. Полученный BGR-кадр последовательно
@@ -153,8 +156,13 @@ python tools/benchmark_fps.py --camera 0 --warmup 3 --seconds 10
 ```powershell
 python -m unittest discover -s tests -v
 python -m unittest discover -s detection -p "test_*.py" -v
-python -m unittest discover -s gaze/tests -p "test_*.py" -v
+python -m unittest discover -s teacher -p "test_*.py" -v
 ```
+
+Первая команда также запускает тесты `gaze/tests` через общий тестовый вход.
+Панель преподавателя запускается командой `python -m teacher` и читает ту же
+базу сессий. Названия обнаруженных процессов и служб показываются как в
+итогах теста, так и в таблице событий панели преподавателя.
 
 Перед демонстрацией отдельно проверьте:
 

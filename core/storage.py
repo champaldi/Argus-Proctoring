@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from events import EventType, ProctorEvent
+from .image_io import write_image
 
 
 SCHEMA = """
@@ -126,18 +127,12 @@ class EventStore:
         self.connection.commit()
 
     def _save_screenshot(self, event: ProctorEvent, session_id: str, frame: Any) -> str:
-        try:
-            import cv2
-        except ImportError as exc:
-            raise RuntimeError("opencv-python is required to save screenshots") from exc
-
         session_dir = self.screenshots_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         timestamp = event.occurred_at.strftime("%Y%m%dT%H%M%S_%fZ")
         destination = session_dir / f"{timestamp}_{event.type.value}_{event.event_id[:8]}.jpg"
-        if not cv2.imwrite(str(destination), frame):
-            raise OSError(f"could not write screenshot to {destination}")
-        return str(destination)
+        write_image(destination, frame)
+        return str(destination.resolve())
 
     def record_event(
         self,

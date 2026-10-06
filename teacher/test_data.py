@@ -63,6 +63,21 @@ class TeacherDataTests(unittest.TestCase):
                          ["phone_detected", "gaze_side"])
         self.assertEqual(session.final_risk, 39.4)
 
+    def test_equal_timestamps_preserve_recorded_order_for_combination_risk(self):
+        store = EventStore(self.database, self.root / "screenshots")
+        store.start_session("tied")
+        for name, event_id, weight, total in (
+            ("phone_aimed_at_screen", "z-first", 40, 40),
+            ("gaze_side", "a-second", 15, 55),
+        ):
+            event = ProctorEvent(type=name, event_id=event_id, source="test",
+                                 occurred_at=self.started)
+            store.record_event(event, session_id="tied", weight=weight, risk_total=total)
+        store.finish_session("tied", final_risk=55)
+        store.close()
+        session = next(item for item in load_sessions(self.database) if item.id == "tied")
+        self.assertEqual(recalculate_risk(session), 55)
+
     def test_recalculation_excludes_false_positive_and_its_combination(self) -> None:
         session = load_sessions(self.database)[0]
         # Пересчёт возвращает максимум за сессию, без убывания к её концу.

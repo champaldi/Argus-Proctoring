@@ -41,7 +41,8 @@ class DemoTests(unittest.TestCase):
             )],
         )
         with tempfile.TemporaryDirectory() as temporary:
-            with (patch.object(demo, "SAMPLES_DIR", Path(temporary)),
+            samples = Path(temporary) / "Кадры"
+            with (patch.object(demo, "SAMPLES_DIR", samples),
                   patch.object(demo, "PhoneDetector", return_value=detector),
                   patch.object(demo.cv2, "VideoCapture", return_value=Camera()),
                   patch.object(demo.cv2, "imshow"),
@@ -56,9 +57,9 @@ class DemoTests(unittest.TestCase):
                                 for call in put_text.call_args_list))
             detector.close.assert_called_once()
             for label in ("phone", "not_phone"):
-                files = list((Path(temporary) / label).glob("*.jpg"))
+                files = list((samples / label).glob("*.jpg"))
                 self.assertEqual(len(files), 1)
-                saved = cv2.imread(str(files[0]))
+                saved = cv2.imdecode(np.frombuffer(files[0].read_bytes(), np.uint8), cv2.IMREAD_COLOR)
                 self.assertEqual(saved.shape, (100, 100, 3))
                 self.assertTrue(np.all(saved == 0))
 

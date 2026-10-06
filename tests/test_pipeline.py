@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -11,6 +12,86 @@ from events import EventType, ProctorEvent
 
 
 class PipelineTests(unittest.TestCase):
+    def test_submit_copy_finishing_after_stop_is_rejected(self) -> None:
+        copying, release = threading.Event(), threading.Event()
+
+        class SlowFrame:
+            def copy(self):
+                copying.set()
+                release.wait(2)
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(root / "events.db", root / "shots")
+            pipeline.start()
+            accepted = []
+            sender = threading.Thread(
+                target=lambda: accepted.append(pipeline.submit(
+                    ProctorEvent.create("phone_detected", source="test"), SlowFrame()
+                ))
+            )
+            try:
+                sender.start()
+                self.assertTrue(copying.wait(1))
+                pipeline.stop()
+            finally:
+                release.set()
+                sender.join(2)
+                pipeline.stop()
+            self.assertFalse(sender.is_alive())
+            self.assertEqual(accepted, [False])
+            self.assertEqual(load_session_events(root / "events.db", pipeline.session_id), [])
+
+    def test_full_queue_finishes_draining_after_stop_times_out(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed_callback(event):
+            entered.set()
+            release.wait(2)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            errors = []
+            pipeline = EventPipeline(
+                root / "events.db", root / "shots",
+                on_recorded=delayed_callback, on_error=errors.append, queue_size=1,
+            )
+            pipeline.start()
+            worker = pipeline._thread
+            try:
+                self.assertTrue(pipeline.submit(
+                    ProctorEvent.create("phone_detected", source="test")
+                ))
+                self.assertTrue(entered.wait(1))
+                self.assertTrue(pipeline.submit(ProctorEvent.create("gaze_down", source="test")))
+                self.assertIs(pipeline.stop(timeout=0), False)
+                self.assertIs(pipeline._thread, worker)
+                self.assertIs(pipeline.stop(timeout=0), False)
+                self.assertEqual(errors, [])
+                release.set()
+                worker.join(1)
+                self.assertFalse(worker.is_alive())
+                self.assertTrue(pipeline.stop(timeout=0))
+                self.assertTrue(pipeline.stop(timeout=0))
+                stored = load_session_events(root / "events.db", pipeline.session_id)
+                self.assertEqual(
+                    [item.event.type.value for item in stored], ["phone_detected", "gaze_down"]
+                )
+                connection = sqlite3.connect(root / "events.db")
+                try:
+                    status = connection.execute("SELECT status FROM sessions").fetchone()[0]
+                    self.assertEqual(status, "completed")
+                finally:
+                    connection.close()
+            finally:
+                release.set()
+                # Also release the old sentinel-based writer if the regression fails.
+                if worker.is_alive():
+                    pipeline._queue.put(None, timeout=2)
+                    worker.join(2)
+                pipeline.stop()
+
     def test_different_applications_detected_in_quick_succession_are_both_saved(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

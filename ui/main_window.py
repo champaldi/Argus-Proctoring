@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,57 +30,14 @@ from PySide6.QtWidgets import (
 from config import AppConfig, RISK_RED_ABOVE, RISK_YELLOW_FROM
 from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
+from core.event_presentation import EVENT_LABELS, application_details
 from core.security import SecurityAdapter
 from core.storage import (
     StoredEvent,
     load_session_events,
     record_teacher_verdict,
 )
-from events import EventType, ProctorEvent
-
-
-EVENT_LABELS = {
-    "phone_detected": "Обнаружен телефон",
-    "phone_aimed_at_screen": "Телефон направлен на экран",
-    "gaze_down": "Долгий взгляд вниз",
-    "gaze_side": "Долгий взгляд в сторону",
-    "no_face": "Лицо не обнаружено",
-    "multiple_faces": "В кадре несколько лиц",
-    "too_close_to_camera": "Слишком близко к камере",
-    "hotkey_blocked": "Заблокирована комбинация клавиш",
-    "window_switched": "Переключение окна",
-    "suspicious_process": "Обнаружен запрещённый процесс",
-    "capture_protection_failed": "Не удалось скрыть окно от захвата",
-    "remote_session": "Тест запущен через удалённую сессию",
-    "multiple_monitors": "Подключено несколько мониторов",
-    "injected_input": "Обнаружен программно внедрённый ввод",
-}
-
-
-def application_details(event: ProctorEvent) -> list[str]:
-    """Describe the exact processes and services recorded by protection."""
-    if event.type != EventType.SUSPICIOUS_PROCESS:
-        return []
-    lines = []
-    for process in event.details.get("processes") or []:
-        if not isinstance(process, Mapping) or not process.get("name"):
-            continue
-        line = f"Приложение: {process['name']}"
-        if process.get("pid") is not None:
-            line += f" (PID {process['pid']})"
-        lines.append(line)
-    for service in event.details.get("services") or []:
-        if not isinstance(service, Mapping):
-            continue
-        name = service.get("name")
-        display_name = service.get("display_name") or name
-        if not display_name:
-            continue
-        line = f"Служба: {display_name}"
-        if name and name != display_name:
-            line += f" ({name})"
-        lines.append(line)
-    return lines
+from events import ProctorEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,9 +101,6 @@ class CameraWorker(QObject):
 
     def stop(self) -> None:
         self._stop_event.set()
-        capture = self._capture
-        if capture is not None:
-            capture.release()
 
     def snapshot(self) -> Any:
         with self._frame_lock:
@@ -157,25 +110,42 @@ class CameraWorker(QObject):
 
     def run(self) -> None:
         try:
+            self._run_camera()
+        except Exception as exc:
+            self.analysis_error.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            try:
+                self.detectors.close()
+                if self._capture is not None:
+                    self._capture.release()
+            finally:
+                self._capture = None
+                self.camera_status.emit(False, "Камера остановлена")
+                self.finished.emit()
+
+    def _run_camera(self) -> None:
+        if self._stop_event.is_set():
+            return
+        try:
             import cv2
         except ImportError:
             self.camera_status.emit(False, "Не установлен OpenCV")
-            self.finished.emit()
             return
 
         for status in self.detectors.load():
             self.module_status.emit(status)
 
+        if self._stop_event.is_set():
+            return
+
         backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else 0
         capture = cv2.VideoCapture(self.config.camera_index, backend)
         self._capture = capture
         if not capture.isOpened():
-            capture.release()
             self.camera_status.emit(
                 False,
                 f"Камера {self.config.camera_index} недоступна",
             )
-            self.finished.emit()
             return
 
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -194,66 +164,59 @@ class CameraWorker(QObject):
         phone_time_total = 0.0
         gaze_time_total = 0.0
 
-        try:
-            while not self._stop_event.is_set():
-                ok, frame = capture.read()
-                if not ok:
-                    if self._stop_event.is_set():
-                        break
-                    self.camera_status.emit(False, "Не удалось получить кадр")
+        while not self._stop_event.is_set():
+            ok, frame = capture.read()
+            if not ok:
+                if self._stop_event.is_set():
                     break
+                self.camera_status.emit(False, "Не удалось получить кадр")
+                break
 
-                with self._frame_lock:
-                    self._latest_frame = frame
-                captured_frames += 1
+            with self._frame_lock:
+                self._latest_frame = frame
+            captured_frames += 1
 
-                now = time.monotonic()
-                if now - last_analysis >= analysis_interval:
-                    events, errors = self.detectors.analyze(frame)
-                    analyzed_frames += 1
-                    phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
-                    gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
-                    for event in events:
-                        self.pipeline.submit(event, frame)
-                    for message in errors:
-                        if now - last_error.get(message, 0.0) >= 5.0:
-                            self.analysis_error.emit(message)
-                            last_error[message] = now
-                    last_analysis = now
+            now = time.monotonic()
+            if now - last_analysis >= analysis_interval:
+                events, errors = self.detectors.analyze(frame)
+                analyzed_frames += 1
+                phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
+                gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
+                for event in events:
+                    self.pipeline.submit(event, frame)
+                for message in errors:
+                    if now - last_error.get(message, 0.0) >= 5.0:
+                        self.analysis_error.emit(message)
+                        last_error[message] = now
+                last_analysis = now
 
-                performance_elapsed = now - performance_started
-                if performance_elapsed >= 5.0:
-                    self.performance_ready.emit(
-                        captured_frames / performance_elapsed,
-                        analyzed_frames / performance_elapsed,
-                        phone_time_total / max(1, analyzed_frames),
-                        gaze_time_total / max(1, analyzed_frames),
-                    )
-                    performance_started = now
-                    captured_frames = 0
-                    analyzed_frames = 0
-                    phone_time_total = 0.0
-                    gaze_time_total = 0.0
+            performance_elapsed = now - performance_started
+            if performance_elapsed >= 5.0:
+                self.performance_ready.emit(
+                    captured_frames / performance_elapsed,
+                    analyzed_frames / performance_elapsed,
+                    phone_time_total / max(1, analyzed_frames),
+                    gaze_time_total / max(1, analyzed_frames),
+                )
+                performance_started = now
+                captured_frames = 0
+                analyzed_frames = 0
+                phone_time_total = 0.0
+                gaze_time_total = 0.0
 
-                if now - last_preview >= preview_interval:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    height, width, channels = rgb.shape
-                    image = QImage(
-                        rgb.data,
-                        width,
-                        height,
-                        channels * width,
-                        QImage.Format.Format_RGB888,
-                    ).copy()
-                    self.frame_ready.emit(image)
-                    last_preview = now
-                QThread.msleep(2)
-        finally:
-            self.detectors.close()
-            capture.release()
-            self._capture = None
-            self.camera_status.emit(False, "Камера остановлена")
-            self.finished.emit()
+            if now - last_preview >= preview_interval:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                height, width, channels = rgb.shape
+                image = QImage(
+                    rgb.data,
+                    width,
+                    height,
+                    channels * width,
+                    QImage.Format.Format_RGB888,
+                ).copy()
+                self.frame_ready.emit(image)
+                last_preview = now
+            QThread.msleep(2)
 
 
 class TeacherReviewDialog(QDialog):
@@ -404,12 +367,20 @@ class TeacherReviewDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    shutdown_finished = Signal()
+
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.config = config
         self.answers: dict[int, int] = {}
         self.question_index = 0
         self._shutdown_done = False
+        self._shutdown_started = False
+        self._close_requested = False
+        self._review_score: tuple[int, int] | None = None
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setInterval(25)
+        self._shutdown_timer.timeout.connect(self._continue_shutdown)
 
         self.bridge = UiBridge()
         self.bridge.event_recorded.connect(self._on_event_recorded)
@@ -615,8 +586,17 @@ class MainWindow(QMainWindow):
             for index, question in enumerate(QUESTIONS)
         )
         self.next_button.setEnabled(False)
-        self.progress_label.setText("Тест завершён · контроль выключен")
-        self.shutdown()
+        self.previous_button.setEnabled(False)
+        self._review_score = (correct, len(QUESTIONS))
+        self.progress_label.setText("Тест завершён · сохраняем результаты…")
+        if self.shutdown():
+            self._show_review()
+
+    def _show_review(self) -> None:
+        score = self._review_score
+        self._review_score = None
+        if score is None:
+            return
         final_risk = self.pipeline.peak_risk().total
         try:
             events = load_session_events(
@@ -634,13 +614,15 @@ class MainWindow(QMainWindow):
             session_id=self.pipeline.session_id,
             events=events,
             final_risk=final_risk,
-            test_score=(correct, len(QUESTIONS)),
+            test_score=score,
             parent=self,
         )
         review.exec()
         self.close()
 
     def start_monitoring(self) -> None:
+        if self._shutdown_started:
+            return
         enabled, message = self.security.enable(hwnd=int(self.winId()))
         self._set_status(self.security_status_label, "Защита", enabled, message)
 
@@ -742,27 +724,45 @@ class MainWindow(QMainWindow):
     def _show_runtime_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 7000)
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> bool:
+        """Request shutdown and poll completion without blocking the Qt thread."""
         if self._shutdown_done:
-            return
-        self._shutdown_done = True
-        if hasattr(self, "risk_timer"):
+            return True
+        if not self._shutdown_started:
+            self._shutdown_started = True
             self.risk_timer.stop()
-        try:
+            self.next_button.setEnabled(False)
+            self.previous_button.setEnabled(False)
             if self.camera_worker is not None:
                 self.camera_worker.stop()
             if self.camera_thread is not None:
                 self.camera_thread.quit()
-                self.camera_thread.wait(4000)
-        finally:
-            try:
-                self.security.disable()
-            finally:
-                self.pipeline.stop()
+            self.security.disable()
+            self._shutdown_timer.start()
+        if self.camera_thread is not None and self.camera_thread.isRunning():
+            return False
+        # Finish the writer only after the camera can no longer enqueue evidence.
+        if not self.pipeline.stop(timeout=0):
+            return False
+        self._shutdown_done = True
+        self._shutdown_timer.stop()
+        self.shutdown_finished.emit()
+        return True
+
+    def _continue_shutdown(self) -> None:
+        if self.shutdown():
+            if self._close_requested:
+                self.close()
+            elif self._review_score is not None:
+                self._show_review()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self.shutdown()
-        event.accept()
+        self._close_requested = True
+        self._review_score = None
+        if self.shutdown():
+            event.accept()
+        else:
+            event.ignore()
 
 
 def run_application(config: AppConfig) -> int:
@@ -773,5 +773,10 @@ def run_application(config: AppConfig) -> int:
     try:
         return app.exec()
     finally:
-        window.shutdown()
+        if not window.shutdown():
+            # app.quit() can bypass closeEvent; retain the window and its QThread
+            # until the same asynchronous cleanup finishes in this local loop.
+            cleanup = QEventLoop()
+            window.shutdown_finished.connect(cleanup.quit)
+            cleanup.exec()
 

@@ -87,7 +87,7 @@ def load_sessions(database_path: Path) -> list[Session]:
         event_rows = connection.execute(
             """SELECT id, session_id, event_type, occurred_at, source,
                       confidence, weight, risk_total, details_json, screenshot_path
-               FROM events ORDER BY occurred_at, id"""
+               FROM events ORDER BY occurred_at, rowid"""
         ).fetchall()
     finally:
         connection.close()
