@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from threading import Lock
+from threading import RLock
 from typing import Any
 
 import cv2
@@ -34,8 +34,9 @@ NEGATIVE_PROMPTS = (
     "a piece of clothing",
 )
 
-_lock = Lock()
+_lock = RLock()
 _model_data: tuple[Any, Any, torch.Tensor] | None = None
+_users = 0
 
 
 def _get_model_data() -> tuple[Any, Any, torch.Tensor]:
@@ -60,8 +61,22 @@ def _get_model_data() -> tuple[Any, Any, torch.Tensor]:
 
 
 def warmup() -> None:
-    """Заранее загружает веса и описания до обработки кадров камеры."""
-    _get_model_data()
+    """Загружает CLIP и отмечает ещё один использующий его детектор."""
+    global _users
+    with _lock:
+        _get_model_data()
+        _users += 1
+
+
+def release() -> None:
+    """Удаляет общую ссылку на модель после закрытия последнего детектора."""
+    global _model_data, _users
+    with _lock:
+        if _users == 0:
+            return
+        _users -= 1
+        if _users == 0:
+            _model_data = None
 
 
 def verify_phone(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> float:

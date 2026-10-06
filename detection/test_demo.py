@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -31,6 +31,7 @@ class DemoTests(unittest.TestCase):
     def test_p_and_n_save_original_frame_without_drawn_box(self):
         detector = SimpleNamespace(
             detect=lambda frame: [],
+            close=Mock(),
             last_detections=[SimpleNamespace(class_id=67, confidence=0.9,
                                              bbox=(10, 10, 50, 50), aspect=1.0,
                                              verifier_score=0.8)],
@@ -53,6 +54,7 @@ class DemoTests(unittest.TestCase):
                                 for call in put_text.call_args_list))
             self.assertTrue(any(call.args[1] == "rejected clip=0.19"
                                 for call in put_text.call_args_list))
+            detector.close.assert_called_once()
             for label in ("phone", "not_phone"):
                 files = list((Path(temporary) / label).glob("*.jpg"))
                 self.assertEqual(len(files), 1)
