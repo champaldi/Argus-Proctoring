@@ -1,0 +1,103 @@
+"""Windows boundary: keyboard hooks, foreground windows and process snapshots."""
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+class WindowsBackend:
+    def __init__(self):
+        if sys.platform != "win32":
+            raise OSError("Environment protection requires Windows")
+        import keyboard
+        import psutil
+        import win32api
+        import win32con
+        import win32gui
+        import win32process
+
+        self.keyboard = keyboard
+        self.psutil = psutil
+        self.api = win32api
+        self.con = win32con
+        self.gui = win32gui
+        self.process = win32process
+
+    def resolve_target(self, hwnd):
+        if hwnd is None:
+            foreground = self.gui.GetForegroundWindow()
+            if foreground and self.process.GetWindowThreadProcessId(foreground)[1] == os.getpid():
+                hwnd = self.gui.GetAncestor(foreground, self.con.GA_ROOTOWNER)
+            else:
+                windows = []
+
+                def collect(candidate, _):
+                    if (
+                        self.gui.IsWindowVisible(candidate)
+                        and not self.gui.GetWindow(candidate, self.con.GW_OWNER)
+                        and self.process.GetWindowThreadProcessId(candidate)[1] == os.getpid()
+                    ):
+                        windows.append(candidate)
+
+                self.gui.EnumWindows(collect, None)
+                if len(windows) != 1:
+                    raise RuntimeError("Cannot identify test window; pass enable(..., hwnd=...)")
+                hwnd = windows[0]
+        if not hwnd or not self.gui.IsWindow(hwnd) or not self.gui.IsWindowVisible(hwnd):
+            raise ValueError("Target must be a visible, existing Windows window")
+        return hwnd, self.process.GetWindowThreadProcessId(hwnd)[1]
+
+    def initial_modifiers(self):
+        return {
+            name
+            for name, vk in (
+                ("left ctrl", self.con.VK_LCONTROL),
+                ("right ctrl", self.con.VK_RCONTROL),
+                ("left alt", self.con.VK_LMENU),
+                ("right alt", self.con.VK_RMENU),
+                ("left shift", self.con.VK_LSHIFT),
+                ("right shift", self.con.VK_RSHIFT),
+            )
+            if self.api.GetAsyncKeyState(vk) & 0x8000
+        }
+
+    def install_hook(self, callback):
+        return self.keyboard.hook(callback, suppress=True)
+
+    def target_exists(self, hwnd, pid):
+        return (
+            self.gui.IsWindow(hwnd)
+            and self.process.GetWindowThreadProcessId(hwnd)[1] == pid
+            and self.gui.IsWindowVisible(hwnd)
+        )
+
+    def foreground_window(self):
+        return self.gui.GetForegroundWindow()
+
+    def belongs_to_target(self, hwnd, target, pid):
+        if not hwnd or not self.gui.IsWindow(hwnd):
+            return False
+        return self.process.GetWindowThreadProcessId(hwnd)[1] == pid and (
+            hwnd == target or self.gui.GetAncestor(hwnd, self.con.GA_ROOTOWNER) == target
+        )
+
+    def restore(self, hwnd):
+        try:
+            if self.gui.IsIconic(hwnd):
+                self.gui.ShowWindow(hwnd, self.con.SW_RESTORE)
+            self.gui.SetForegroundWindow(hwnd)
+        except self.gui.error:
+            return False
+        return self.gui.GetForegroundWindow() == hwnd
+
+    def processes(self):
+        result = []
+        for process in self.psutil.process_iter(
+            ["pid", "ppid", "name", "create_time"], ad_value=None
+        ):
+            try:
+                result.append(dict(process.info))
+            except (self.psutil.NoSuchProcess, self.psutil.AccessDenied):
+                continue
+        return result
