@@ -56,6 +56,10 @@ class RiskScorerTests(unittest.TestCase):
         self.clock.now = 55.0
         self.assertEqual(self.scorer.current().level, "low")
 
+    def test_capture_protection_failure_has_security_weight(self) -> None:
+        update = self.scorer.add(self.event("capture_protection_failed"))
+        self.assertEqual(update.weight, 15.0)
+
 
 if __name__ == "__main__":
     unittest.main()

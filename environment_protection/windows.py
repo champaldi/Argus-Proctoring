@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import os
 import sys
+from ctypes import WinDLL, wintypes
+
+
+WDA_NONE = 0x00
+WDA_EXCLUDEFROMCAPTURE = 0x11
 
 
 class WindowsBackend:
@@ -23,6 +28,7 @@ class WindowsBackend:
         self.con = win32con
         self.gui = win32gui
         self.process = win32process
+        self.user32 = WinDLL("user32", use_last_error=True)
 
     def resolve_target(self, hwnd):
         if hwnd is None:
@@ -61,6 +67,18 @@ class WindowsBackend:
             )
             if self.api.GetAsyncKeyState(vk) & 0x8000
         }
+
+    def _set_capture_affinity(self, hwnd, affinity):
+        function = self.user32.SetWindowDisplayAffinity
+        function.argtypes = (wintypes.HWND, wintypes.DWORD)
+        function.restype = wintypes.BOOL
+        return bool(function(hwnd, affinity))
+
+    def protect_capture(self, hwnd):
+        return self._set_capture_affinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+
+    def release_capture(self, hwnd):
+        return self._set_capture_affinity(hwnd, WDA_NONE)
 
     def install_hook(self, callback):
         return self.keyboard.hook(callback, suppress=True)

@@ -25,6 +25,7 @@ class EventType(str, Enum):
     HOTKEY_BLOCKED = "hotkey_blocked"
     WINDOW_SWITCHED = "window_switched"
     SUSPICIOUS_PROCESS = "suspicious_process"
+    CAPTURE_PROTECTION_FAILED = "capture_protection_failed"
 
 
 def utc_now() -> datetime:

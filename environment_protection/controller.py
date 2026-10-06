@@ -64,6 +64,7 @@ class _Session:
     blocked_keys: set[int] = field(default_factory=set)
     seen_processes: set[tuple[int, float | None]] = field(default_factory=set)
     remove_hook: Callable | None = None
+    capture_protected: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     threads: list[threading.Thread] = field(default_factory=list)
     reason: str = "enabled"
@@ -105,6 +106,9 @@ class Protection:
             session = _Session(target, pid, callback, time.monotonic() + self.config.max_seconds)
             self._session = session
             try:
+                session.capture_protected = self.backend.protect_capture(target)
+                if not session.capture_protected:
+                    self._emit(session, "capture_protection_failed", target_hwnd=target)
                 session.modifiers = {
                     f"left {name}" if name in {"ctrl", "alt", "shift"} else name
                     for name in self.backend.initial_modifiers()
@@ -149,6 +153,7 @@ class Protection:
             "reason": session.reason if session else "not_started",
             "last_error": session.error if session else None,
             "hwnd": session.hwnd if session else None,
+            "capture_protected": bool(session and session.capture_protected),
         }
 
     def drain_events(self) -> list[dict[str, Any]]:
@@ -167,6 +172,16 @@ class Protection:
 
     def _cleanup(self, session: _Session):
         with session.cleanup_lock:
+            if session.capture_protected:
+                try:
+                    released = self.backend.release_capture(session.hwnd)
+                except Exception as exc:
+                    session.error = f"{type(exc).__name__}: {exc}"
+                else:
+                    if released:
+                        session.capture_protected = False
+                    else:
+                        session.error = "RuntimeError: Could not release capture protection"
             if session.remove_hook is not None:
                 try:
                     session.remove_hook()

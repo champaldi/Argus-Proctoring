@@ -41,6 +41,14 @@ class EventContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ProctorEvent.create("gaze_down", source="face", confidence=1.2)
 
+    def test_capture_protection_failure_uses_shared_contract(self) -> None:
+        event = normalize_events(
+            {"type": "capture_protection_failed", "target_hwnd": 100},
+            default_source="security",
+        )[0]
+        self.assertEqual(event.type, EventType.CAPTURE_PROTECTION_FAILED)
+        self.assertEqual(event.details, {"target_hwnd": 100})
+
 
 if __name__ == "__main__":
     unittest.main()

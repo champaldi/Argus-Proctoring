@@ -23,12 +23,22 @@ class FakeDesktop:
         self.fail_install = False
         self.fail_remove = False
         self.modifiers = set()
+        self.capture_succeeds = True
+        self.capture_calls = []
 
     def resolve_target(self, hwnd):
         return (hwnd or 100), 10
 
     def initial_modifiers(self):
         return self.modifiers
+
+    def protect_capture(self, hwnd):
+        self.capture_calls.append(("protect", hwnd))
+        return self.capture_succeeds
+
+    def release_capture(self, hwnd):
+        self.capture_calls.append(("release", hwnd))
+        return True
 
     def install_hook(self, callback):
         if self.fail_install:
@@ -143,6 +153,25 @@ class ProtectionTests(unittest.TestCase):
         self.assertIsNone(self.desktop.hook)
         self.assertTrue(hook(key("left windows", 91)))
         self.assertFalse(self.protection.status()["enabled"])
+
+    def test_capture_protection_is_applied_and_released_once(self):
+        self.start()
+        self.assertTrue(self.protection.status()["capture_protected"])
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(
+            self.desktop.capture_calls,
+            [("protect", 100), ("release", 100)],
+        )
+        self.assertFalse(self.protection.status()["capture_protected"])
+
+    def test_capture_protection_failure_is_reported_without_locking_desktop(self):
+        self.desktop.capture_succeeds = False
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual(self.events[0]["type"], "capture_protection_failed")
+        self.assertEqual(self.events[0]["details"], {"target_hwnd": 100})
+        self.assertFalse(self.protection.status()["capture_protected"])
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()

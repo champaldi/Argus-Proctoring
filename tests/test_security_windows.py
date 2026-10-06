@@ -80,3 +80,16 @@ class WindowsBackendTests(unittest.TestCase):
             remove = backend.install_hook(lambda event: True)
             remove()
         self.assertEqual(registrations, [unrelated])
+
+    def test_capture_affinity_uses_exclusion_and_restores_normal_rendering(self):
+        user32 = Mock()
+        user32.SetWindowDisplayAffinity.return_value = 1
+        self.backend.user32 = user32
+
+        self.assertTrue(self.backend.protect_capture(100))
+        self.assertTrue(self.backend.release_capture(100))
+
+        self.assertEqual(
+            [call.args for call in user32.SetWindowDisplayAffinity.call_args_list],
+            [(100, 0x11), (100, 0x00)],
+        )

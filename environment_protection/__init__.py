@@ -40,7 +40,13 @@ def disable():
 
 def status():
     if _protection is None:
-        return {"enabled": False, "reason": "not_started", "last_error": None, "hwnd": None}
+        return {
+            "enabled": False,
+            "reason": "not_started",
+            "last_error": None,
+            "hwnd": None,
+            "capture_protected": False,
+        }
     return _protection.status()
 
 
