@@ -28,6 +28,8 @@ class FakeDesktop:
         self.capture_succeeds = True
         self.capture_release_succeeds = True
         self.capture_calls = []
+        self.lock_succeeds = True
+        self.lock_calls = []
         self.remote_session = False
         self.monitor_count_value = 1
         self.fail_input_remove = False
@@ -45,6 +47,14 @@ class FakeDesktop:
     def release_capture(self, hwnd):
         self.capture_calls.append(("release", hwnd))
         return self.capture_release_succeeds
+
+    def lock_window(self, hwnd):
+        self.lock_calls.append(("lock", hwnd))
+        return self.lock_succeeds
+
+    def unlock_window(self, hwnd):
+        self.lock_calls.append(("unlock", hwnd))
+        return True
 
     def is_remote_session(self):
         return self.remote_session
@@ -193,6 +203,30 @@ class ProtectionTests(unittest.TestCase):
             [("protect", 100), ("release", 100)],
         )
         self.assertFalse(self.protection.status()["capture_protected"])
+
+    def test_test_window_is_pinned_on_top_and_released_once(self):
+        self.start()
+        self.assertTrue(self.protection.status()["window_locked"])
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(self.desktop.lock_calls, [("lock", 100), ("unlock", 100)])
+        self.assertFalse(self.protection.status()["window_locked"])
+
+    def test_failed_window_pin_does_not_prevent_protection(self):
+        self.desktop.lock_succeeds = False
+        self.start()
+        status = self.protection.status()
+        self.assertTrue(status["enabled"])
+        self.assertFalse(status["window_locked"])
+        self.protection.disable()
+        self.assertEqual(self.desktop.lock_calls, [("lock", 100)])
+
+    def test_emergency_hotkey_releases_window_pin(self):
+        hook = self.start()
+        hook(key("ctrl", 29))
+        hook(key("alt", 56))
+        hook(key("f12", 88))
+        self.assertTrue(wait_for(lambda: ("unlock", 100) in self.desktop.lock_calls))
 
     def test_capture_protection_failure_is_reported_without_locking_desktop(self):
         self.desktop.capture_succeeds = False

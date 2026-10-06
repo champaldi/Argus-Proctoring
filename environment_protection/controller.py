@@ -70,6 +70,8 @@ class ProtectionConfig:
     # longest real exam, otherwise protection silently ends mid-test.
     max_seconds: float = 4 * 60 * 60.0
     injected_input_idle_seconds: float = 1.0
+    # Keep the test window maximized and above every other window.
+    lock_window: bool = True
     blocked_process_names: frozenset[str] = DEFAULT_PROCESS_NAMES
     blocked_service_names: frozenset[str] = DEFAULT_SERVICE_NAMES
 
@@ -113,6 +115,7 @@ class _Session:
     remove_input_hook: Callable | None = None
     last_injected_input: float | None = None
     capture_protected: bool = False
+    window_locked: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     threads: list[threading.Thread] = field(default_factory=list)
     reason: str = "enabled"
@@ -162,6 +165,9 @@ class Protection:
                 session.capture_protected = self.backend.protect_capture(target)
                 if not session.capture_protected:
                     self._emit(session, "capture_protection_failed", target_hwnd=target)
+                if self.config.lock_window:
+                    lock = getattr(self.backend, "lock_window", None)
+                    session.window_locked = bool(lock(target)) if callable(lock) else False
                 if self.backend.is_remote_session():
                     self._emit(session, "remote_session", protocol="rdp")
                 session.modifiers = {
@@ -212,6 +218,7 @@ class Protection:
             "last_error": session.error if session else None,
             "hwnd": session.hwnd if session else None,
             "capture_protected": bool(session and session.capture_protected),
+            "window_locked": bool(session and session.window_locked),
             "monitor_count": session.monitor_count if session else None,
         }
 
@@ -238,6 +245,14 @@ class Protection:
                     session.error = f"{type(exc).__name__}: {exc}"
                 else:
                     session.remove_input_hook = None
+            if session.window_locked:
+                try:
+                    unlocked = self.backend.unlock_window(session.hwnd)
+                except Exception as exc:
+                    session.error = f"{type(exc).__name__}: {exc}"
+                else:
+                    if unlocked:
+                        session.window_locked = False
             if session.capture_protected:
                 try:
                     released = self.backend.release_capture(session.hwnd)

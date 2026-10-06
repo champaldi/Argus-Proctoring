@@ -90,6 +90,57 @@ class WindowsBackend:
     def release_capture(self, hwnd):
         return self._set_capture_affinity(hwnd, WDA_NONE)
 
+    def _covers_monitor(self, hwnd):
+        left, top, right, bottom = self.gui.GetWindowRect(hwnd)
+        monitor = self.api.MonitorFromWindow(hwnd, self.con.MONITOR_DEFAULTTONEAREST)
+        m_left, m_top, m_right, m_bottom = self.api.GetMonitorInfo(monitor)["Monitor"]
+        return left <= m_left and top <= m_top and right >= m_right and bottom >= m_bottom
+
+    def lock_window(self, hwnd):
+        """Keep the test window above all others and make it fill the screen.
+
+        Another program can then neither be placed over the test nor shown
+        beside it. Requests are asynchronous so a caller on a worker thread is
+        never blocked by the window's own thread.
+        """
+        try:
+            self.gui.SetWindowPos(
+                hwnd,
+                self.con.HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                self.con.SWP_NOMOVE | self.con.SWP_NOSIZE | self.con.SWP_ASYNCWINDOWPOS,
+            )
+            # A window the application already shows full screen is left alone.
+            if not self._covers_monitor(hwnd):
+                self.user32.ShowWindowAsync(hwnd, self.con.SW_MAXIMIZE)
+        except Exception:
+            return False
+        return True
+
+    def unlock_window(self, hwnd):
+        """Drop the always-on-top flag; the window size is left to the app."""
+        try:
+            if not self.gui.IsWindow(hwnd):
+                return True
+            self.gui.SetWindowPos(
+                hwnd,
+                self.con.HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                self.con.SWP_NOMOVE
+                | self.con.SWP_NOSIZE
+                | self.con.SWP_NOACTIVATE
+                | self.con.SWP_ASYNCWINDOWPOS,
+            )
+        except Exception:
+            return False
+        return True
+
     def is_remote_session(self):
         return bool(self.user32.GetSystemMetrics(SM_REMOTESESSION))
 
