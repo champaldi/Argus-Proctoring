@@ -5,11 +5,28 @@ from pathlib import Path
 
 from core.pipeline import EventPipeline
 from core.risk import RiskScorer
-from core.storage import record_teacher_verdict
+from core.storage import load_session_events, record_teacher_verdict
 from events import EventType, ProctorEvent
 
 
 class PipelineTests(unittest.TestCase):
+    def test_different_applications_detected_in_quick_succession_are_both_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(root / "events.db", root / "screenshots")
+            pipeline.start()
+            try:
+                for pid, name in ((20, "AnyDesk.exe"), (30, "Discord.exe")):
+                    pipeline.submit(ProctorEvent.create(
+                        "suspicious_process", source="security",
+                        details={"processes": [{"pid": pid, "name": name}]},
+                    ))
+            finally:
+                pipeline.stop()
+            stored = load_session_events(root / "events.db", pipeline.session_id)
+            names = [item.event.details["processes"][0]["name"] for item in stored]
+            self.assertEqual(names, ["AnyDesk.exe", "Discord.exe"])
+
     def test_records_event_and_suppresses_immediate_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

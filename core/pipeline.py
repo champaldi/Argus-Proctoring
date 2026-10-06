@@ -29,7 +29,9 @@ DEFAULT_COOLDOWNS: dict[EventType, float] = {
     # Protection callbacks may report the same OS action more than once.
     EventType.HOTKEY_BLOCKED: 0.25,
     EventType.WINDOW_SWITCHED: 1.0,
-    EventType.SUSPICIOUS_PROCESS: 10.0,
+    # Protection already reports only newly observed process/service identities.
+    # A type-wide cooldown would discard a different app found on the next scan.
+    EventType.SUSPICIOUS_PROCESS: 0.0,
     EventType.CAPTURE_PROTECTION_FAILED: 10.0,
     EventType.REMOTE_SESSION: 60.0,
     EventType.MULTIPLE_MONITORS: 0.0,

@@ -465,8 +465,7 @@ class Protection:
         ]
         session.seen_services = service_identities
         if newly_detected or new_services:
-            # The host has a cooldown per event TYPE, not per process. Keep
-            # simultaneous observations together so siblings reach SQLite.
+            # Report new identities together; repeats are filtered above.
             self._emit(
                 session,
                 "suspicious_process",

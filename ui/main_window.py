@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,7 +37,7 @@ from core.storage import (
     load_session_events,
     record_teacher_verdict,
 )
-from events import ProctorEvent
+from events import EventType, ProctorEvent
 
 
 EVENT_LABELS = {
@@ -55,6 +56,32 @@ EVENT_LABELS = {
     "multiple_monitors": "Подключено несколько мониторов",
     "injected_input": "Обнаружен программно внедрённый ввод",
 }
+
+
+def application_details(event: ProctorEvent) -> list[str]:
+    """Describe the exact processes and services recorded by protection."""
+    if event.type != EventType.SUSPICIOUS_PROCESS:
+        return []
+    lines = []
+    for process in event.details.get("processes") or []:
+        if not isinstance(process, Mapping) or not process.get("name"):
+            continue
+        line = f"Приложение: {process['name']}"
+        if process.get("pid") is not None:
+            line += f" (PID {process['pid']})"
+        lines.append(line)
+    for service in event.details.get("services") or []:
+        if not isinstance(service, Mapping):
+            continue
+        name = service.get("name")
+        display_name = service.get("display_name") or name
+        if not display_name:
+            continue
+        line = f"Служба: {display_name}"
+        if name and name != display_name:
+            line += f" ({name})"
+        lines.append(line)
+    return lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +370,12 @@ class TeacherReviewDialog(QDialog):
         title = QLabel(EVENT_LABELS.get(event_name, event_name))
         title.setStyleSheet("font-size:16px; font-weight:700;")
         text.addWidget(title)
+        for line in application_details(stored.event):
+            detail = QLabel(line)
+            detail.setTextFormat(Qt.TextFormat.PlainText)
+            detail.setWordWrap(True)
+            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            text.addWidget(detail)
         local_time = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
         text.addWidget(QLabel(f"Время: {local_time} · Источник: {stored.event.source}"))
         text.addWidget(
@@ -697,8 +730,12 @@ class MainWindow(QMainWindow):
         self._update_risk_display(risk)
         event_name = str(data["type"])
         label = EVENT_LABELS.get(event_name, event_name)
+        details = application_details(stored.event)
+        if details:
+            label += " · " + "; ".join(details)
         time_label = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
         self.event_list.insertItem(0, f"{time_label}  {label}  +{stored.weight:g}")
+        self.event_list.item(0).setToolTip(self.event_list.item(0).text())
         while self.event_list.count() > 8:
             self.event_list.takeItem(self.event_list.count() - 1)
 
