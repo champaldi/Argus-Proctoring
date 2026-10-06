@@ -1,0 +1,6 @@
+# Minimal runtime for the protection package (Windows).
+keyboard==0.13.5
+pywin32>=306; sys_platform == "win32"
+psutil>=5.9,<8
+# Only required for the standalone demo; already in the team's requirements.
+PySide6>=6.7,<7
