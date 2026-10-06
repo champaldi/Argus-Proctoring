@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from core.storage import EventStore
 from events import ProctorEvent
 
 from teacher.data import (
+    Review,
     ReviewStore,
     current_verdict,
     export_roster,
@@ -62,6 +64,20 @@ class TeacherDataTests(unittest.TestCase):
         self.assertEqual([item.event.type.value for item in session.events],
                          ["phone_detected", "gaze_side"])
         self.assertEqual(session.final_risk, 39.4)
+
+    def test_export_keeps_formula_like_identity_and_comment_as_text(self) -> None:
+        session = load_sessions(self.database)[0]
+        output = self.root / "roster.csv"
+        for value in ("=1+1", "+123", "-123", "@SUM(1)", " \t=1+1", "\ttext"):
+            with self.subTest(value=value):
+                named = replace(session, metadata={"student_name": value})
+                export_roster(output, [named], {session.id: Review(comment=value)})
+                with output.open(encoding="utf-8-sig", newline="") as stream:
+                    rows = list(csv.reader(stream))
+                expected_name = "text" if value == "\ttext" else "'" + named.student_name
+                self.assertEqual(rows[1][0], expected_name)
+                self.assertEqual(rows[1][3], "'" + value)
+                self.assertEqual(named.metadata["student_name"], value)
 
     def test_equal_timestamps_preserve_recorded_order_for_combination_risk(self):
         store = EventStore(self.database, self.root / "screenshots")

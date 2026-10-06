@@ -269,6 +269,13 @@ class ReviewStore:
                 )
 
 
+def _csv_text(value: str) -> str:
+    """Keep user-entered text from becoming a spreadsheet formula on import."""
+    if value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def export_roster(
     path: Path, sessions: Iterable[Session], reviews: Mapping[str, Review]
 ) -> None:
@@ -279,8 +286,8 @@ def export_roster(
         for session in sessions:
             review = reviews.get(session.id, Review())
             writer.writerow((
-                session.student_name,
+                _csv_text(session.student_name),
                 f"{recalculate_risk(session, review.false_positive_ids):.1f}",
                 VERDICT_LABELS[current_verdict(session, reviews.get(session.id))],
-                review.comment,
+                _csv_text(review.comment),
             ))
