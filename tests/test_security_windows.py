@@ -154,6 +154,15 @@ class WindowsBackendTests(unittest.TestCase):
         self.assertEqual(function.restype, wintypes.BOOL)
         function.assert_called_once_with(hwnd, self.backend.con.SW_MAXIMIZE)
 
+    def test_clipboard_is_opened_emptied_and_always_closed(self):
+        clipboard = Mock()
+        with patch.dict(sys.modules, {"win32clipboard": clipboard}):
+            self.assertTrue(self.backend.clear_clipboard())
+            clipboard.EmptyClipboard.side_effect = RuntimeError("busy")
+            self.assertFalse(self.backend.clear_clipboard())
+        self.assertEqual(clipboard.OpenClipboard.call_count, 2)
+        self.assertEqual(clipboard.CloseClipboard.call_count, 2)
+
     def test_capture_affinity_uses_exclusion_and_restores_normal_rendering(self):
         user32 = Mock()
         user32.SetWindowDisplayAffinity.return_value = 1
