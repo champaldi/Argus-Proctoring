@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -19,8 +20,24 @@ PHONE_CLASS_ID = 67
 PERSON_CLASS_ID = 0
 MIN_CONFIDENCE = 0.5
 PHONE_CONFIDENCE = 0.35
+PHONE_MAX_ASPECT: float | None = None
 PHONE_WINDOW = 5
 PHONE_MIN_HITS = 3
+DISTRACTOR_CLASS_NAMES = {
+    65: "remote",
+    73: "book",
+    64: "mouse",
+    39: "bottle",
+    41: "cup",
+    76: "scissors",
+    78: "hair drier",
+    79: "toothbrush",
+}
+DISTRACTOR_IOU = 0.5
+USE_DISTRACTOR_CLASSES = True
+USE_VERIFIER = True
+VERIFIER_CACHE_IOU = 0.6
+VERIFIER_CACHE_SECONDS = 1.0
 UPPER_FRAME_FRACTION = 0.5
 LARGE_PHONE_AREA_FRACTION = 0.08
 AIMED_SECONDS = 1.5
@@ -30,6 +47,16 @@ EVENT_COOLDOWN_SECONDS = 2.0
 ENABLE_NO_PERSON = False
 DETECT_EVERY_N_FRAMES = 3
 MODEL_NAME = "yolov8s.pt"
+_verifier_warning_printed = False
+
+
+def _warn_verifier_unavailable(error: Exception) -> None:
+    """Сообщает об отключении CLIP только один раз за процесс."""
+    global _verifier_warning_printed
+    if not _verifier_warning_printed:
+        print(f"Предупреждение: CLIP недоступен ({error}); работаю без проверки.",
+              file=sys.stderr)
+        _verifier_warning_printed = True
 
 
 @dataclass(frozen=True)
@@ -39,6 +66,129 @@ class Detection:
     class_id: int
     confidence: float
     bbox: tuple[int, int, int, int]
+    verifier_score: float | None = None
+
+    @property
+    def aspect(self) -> float:
+        """Отношение длинной стороны рамки к короткой."""
+        x1, y1, x2, y2 = self.bbox
+        width, height = max(0, x2 - x1), max(0, y2 - y1)
+        return max(width, height) / min(width, height) if min(width, height) else math.inf
+
+
+@dataclass(frozen=True)
+class PhoneCandidate:
+    """Сырая рамка телефона и причина её отбрасывания, если есть."""
+
+    detection: Detection
+    rejected_reason: str | None = None
+    verification_ms: float | None = None
+
+
+@dataclass
+class FrameAnalysis:
+    """Принятые объекты и все кандидаты на телефон в одном кадре."""
+
+    detections: list[Detection]
+    phone_candidates: list[PhoneCandidate]
+
+
+def load_model() -> Any:
+    """Загружает веса рядом с этим файлом независимо от текущей папки."""
+    from ultralytics import YOLO
+
+    return YOLO(str(Path(__file__).resolve().parent / MODEL_NAME))
+
+
+def intersection_over_union(first: Detection, second: Detection) -> float:
+    """Возвращает долю пересечения двух рамок относительно их объединения."""
+    ax1, ay1, ax2, ay2 = first.bbox
+    bx1, by1, bx2, by2 = second.bbox
+    width = max(0, min(ax2, bx2) - max(ax1, bx1))
+    height = max(0, min(ay2, by2) - max(ay1, by1))
+    intersection = width * height
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / union if union else 0.0
+
+
+def analyze_frame(
+    frame: np.ndarray,
+    model: Any,
+    *,
+    phone_confidence: float = PHONE_CONFIDENCE,
+    max_aspect: float | None = PHONE_MAX_ASPECT,
+    use_distractors: bool = USE_DISTRACTOR_CLASSES,
+    use_verifier: bool | None = None,
+    verifier: Callable[[np.ndarray, tuple[int, int, int, int]], float | None] | None = None,
+    query_confidence: float | None = None,
+) -> FrameAnalysis:
+    """Один запуск YOLO без временного окна; одинаков для демо и оценки."""
+    if use_verifier is None:
+        use_verifier = USE_VERIFIER
+    classes = [PERSON_CLASS_ID, PHONE_CLASS_ID]
+    if use_distractors:
+        classes.extend(DISTRACTOR_CLASS_NAMES)
+    results = model.predict(
+        frame, device="cpu", classes=classes,
+        conf=(min(phone_confidence, MIN_CONFIDENCE) if query_confidence is None
+              else query_confidence),
+        verbose=False,
+    )
+    people: list[Detection] = []
+    phones: list[Detection] = []
+    distractors: list[Detection] = []
+    for box in results[0].boxes:
+        item = Detection(
+            int(box.cls[0]), float(box.conf[0]),
+            tuple(int(round(value)) for value in box.xyxy[0].tolist()),
+        )
+        if item.class_id == PERSON_CLASS_ID and item.confidence >= MIN_CONFIDENCE:
+            people.append(item)
+        elif item.class_id == PHONE_CLASS_ID:
+            phones.append(item)
+        elif use_distractors and item.class_id in DISTRACTOR_CLASS_NAMES:
+            distractors.append(item)
+
+    candidates: list[PhoneCandidate] = []
+    accepted = list(people)
+    for phone in phones:
+        reason: str | None = None
+        verification_ms: float | None = None
+        if not math.isfinite(phone.aspect):
+            reason = "invalid bbox"
+        elif phone.confidence < phone_confidence:
+            reason = f"confidence {phone.confidence:.2f} < {phone_confidence:.2f}"
+        elif max_aspect is not None and phone.aspect > max_aspect:
+            reason = f"aspect {phone.aspect:.2f} > {max_aspect:.2f}"
+        elif use_distractors:
+            competitors = [
+                item for item in distractors
+                if item.confidence > phone.confidence
+                and intersection_over_union(phone, item) > DISTRACTOR_IOU
+            ]
+            if competitors:
+                rival = max(competitors, key=lambda item: item.confidence)
+                reason = (
+                    f"{DISTRACTOR_CLASS_NAMES[rival.class_id]} {rival.confidence:.2f}, "
+                    f"IoU {intersection_over_union(phone, rival):.2f} > {DISTRACTOR_IOU:.2f}"
+                )
+        if reason is None and use_verifier:
+            from .verifier import VERIFIER_MIN_SCORE, verify_phone
+
+            check = verify_phone if verifier is None else verifier
+            started = time.perf_counter()
+            score = check(frame, phone.bbox)
+            if score is not None:
+                verification_ms = (time.perf_counter() - started) * 1000
+            phone = replace(phone, verifier_score=score)
+            if score is not None and score < VERIFIER_MIN_SCORE:
+                reason = f"verifier_score {score:.2f} < {VERIFIER_MIN_SCORE:.2f}"
+        candidates.append(PhoneCandidate(phone, reason, verification_ms))
+        if reason is None:
+            accepted.append(phone)
+    return FrameAnalysis(accepted, candidates)
 
 
 class PhoneDetector:
@@ -46,10 +196,17 @@ class PhoneDetector:
 
     def __init__(self, *, model: Any = None) -> None:
         if model is None:
-            from ultralytics import YOLO
-
-            model = YOLO(str(Path(__file__).resolve().parent / MODEL_NAME))
+            model = load_model()
         self.model = model
+        self.verifier_enabled = USE_VERIFIER
+        if self.verifier_enabled:
+            try:
+                from .verifier import warmup
+
+                warmup()
+            except Exception as error:
+                self.verifier_enabled = False
+                _warn_verifier_unavailable(error)
         self.reset()
 
     def reset(self) -> None:
@@ -61,7 +218,34 @@ class PhoneDetector:
         self.last_emitted: dict[EventType, float] = {}
         self.last_timestamp: float | None = None
         self.last_detections: list[Detection] = []
+        self.last_phone_candidates: list[PhoneCandidate] = []
+        self.verifier_cache: list[tuple[float, Detection]] = []
         self.frames_seen = 0
+
+    def _verify_cached(
+        self, frame: np.ndarray, bbox: tuple[int, int, int, int], now: float
+    ) -> float | None:
+        """Повторно использует свежую оценку близкой рамки или вызывает CLIP."""
+        if not self.verifier_enabled:
+            return None
+        self.verifier_cache = [
+            entry for entry in self.verifier_cache
+            if 0 <= now - entry[0] < VERIFIER_CACHE_SECONDS
+        ]
+        current = Detection(PHONE_CLASS_ID, 0.0, bbox)
+        for _, old in reversed(self.verifier_cache):
+            if intersection_over_union(current, old) > VERIFIER_CACHE_IOU:
+                return old.verifier_score
+        try:
+            from .verifier import verify_phone
+
+            score = verify_phone(frame, bbox)
+        except Exception as error:
+            self.verifier_enabled = False
+            _warn_verifier_unavailable(error)
+            return None
+        self.verifier_cache.append((now, replace(current, verifier_score=score)))
+        return score
 
     def _emit(
         self,
@@ -69,7 +253,9 @@ class PhoneDetector:
         now: float,
         *,
         phone_count: int,
+        aspect: float | None = None,
         confidence: float | None = None,
+        verifier_score: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> ProctorEvent | None:
         """Создаёт событие, если с прошлого прошло хотя бы две секунды."""
@@ -79,7 +265,9 @@ class PhoneDetector:
         self.last_emitted[event_type] = now
         return ProctorEvent.create(
             event_type, source="phone_detector", confidence=confidence,
-            details={**(details or {}), "phone_count": phone_count},
+            details={**(details or {}), "phone_count": phone_count,
+                     "aspect": round(aspect, 2) if aspect is not None else None,
+                     "verifier_score": verifier_score},
         )
 
     def detect(self, frame: np.ndarray, *, timestamp: float | None = None) -> list[ProctorEvent]:
@@ -107,25 +295,15 @@ class PhoneDetector:
             self.last_timestamp = now
             return []
 
-        # YOLO получает BGR-массив OpenCV напрямую. Указываем CPU явно.
-        results = self.model.predict(
-            frame, device="cpu", classes=[PERSON_CLASS_ID, PHONE_CLASS_ID],
-            conf=PHONE_CONFIDENCE, verbose=False,
+        # Фильтры рамок одинаковы для камеры и покадровой оценки.
+        analysis = analyze_frame(
+            frame, self.model, use_verifier=self.verifier_enabled,
+            verifier=lambda image, bbox: self._verify_cached(image, bbox, now),
         )
-        detections: list[Detection] = []
-        for box in results[0].boxes:
-            class_id = int(box.cls[0])
-            confidence = float(box.conf[0])
-            if class_id == PHONE_CLASS_ID and confidence < PHONE_CONFIDENCE:
-                continue
-            if class_id == PERSON_CLASS_ID and confidence < MIN_CONFIDENCE:
-                continue
-            if class_id not in (PERSON_CLASS_ID, PHONE_CLASS_ID):
-                continue
-            bbox = tuple(int(round(value)) for value in box.xyxy[0].tolist())
-            detections.append(Detection(class_id, confidence, bbox))
+        detections = analysis.detections
 
         self.last_detections = detections
+        self.last_phone_candidates = analysis.phone_candidates
         self.frames_seen = next_frame
         self.last_timestamp = now
         phones = [item for item in detections if item.class_id == PHONE_CLASS_ID]
@@ -151,7 +329,8 @@ class PhoneDetector:
             phone = max(phones, key=lambda item: item.confidence)
             event = self._emit(
                 EventType.PHONE_DETECTED, now, phone_count=phone_count,
-                confidence=phone.confidence,
+                confidence=phone.confidence, aspect=phone.aspect,
+                verifier_score=phone.verifier_score,
                 details={"bbox": list(phone.bbox), "hits_in_window": hits},
             )
             if event is not None:
@@ -171,7 +350,8 @@ class PhoneDetector:
                 phone = max(upper_phones, key=lambda item: item.confidence)
                 event = self._emit(
                     EventType.PHONE_AIMED_AT_SCREEN, now, phone_count=phone_count,
-                    confidence=phone.confidence,
+                    confidence=phone.confidence, aspect=phone.aspect,
+                    verifier_score=phone.verifier_score,
                     details={"bbox": list(phone.bbox), "duration_seconds": duration},
                 )
                 if event is not None:
