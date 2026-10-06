@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QImage, QPixmap
+from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -38,6 +36,7 @@ from core.storage import (
     record_teacher_verdict,
 )
 from events import ProctorEvent
+from ui.camera_worker import CameraWorker
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,149 +73,6 @@ QUESTIONS = (
 class UiBridge(QObject):
     event_recorded = Signal(object)
     pipeline_error = Signal(str)
-
-
-class CameraWorker(QObject):
-    frame_ready = Signal(QImage)
-    module_status = Signal(object)
-    camera_status = Signal(bool, str)
-    analysis_error = Signal(str)
-    performance_ready = Signal(float, float, float, float)
-    finished = Signal()
-
-    def __init__(
-        self,
-        config: AppConfig,
-        detectors: DetectorCollection,
-        pipeline: EventPipeline,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.detectors = detectors
-        self.pipeline = pipeline
-        self._stop_event = threading.Event()
-        self._frame_lock = threading.Lock()
-        self._latest_frame: Any = None
-        self._capture: Any = None
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def snapshot(self) -> Any:
-        with self._frame_lock:
-            if self._latest_frame is None:
-                return None
-            return self._latest_frame.copy()
-
-    def run(self) -> None:
-        try:
-            self._run_camera()
-        except Exception as exc:
-            self.analysis_error.emit(f"{type(exc).__name__}: {exc}")
-        finally:
-            try:
-                self.detectors.close()
-                if self._capture is not None:
-                    self._capture.release()
-            finally:
-                self._capture = None
-                self.camera_status.emit(False, "Камера остановлена")
-                self.finished.emit()
-
-    def _run_camera(self) -> None:
-        if self._stop_event.is_set():
-            return
-        try:
-            import cv2
-        except ImportError:
-            self.camera_status.emit(False, "Не установлен OpenCV")
-            return
-
-        for status in self.detectors.load():
-            self.module_status.emit(status)
-
-        if self._stop_event.is_set():
-            return
-
-        backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else 0
-        capture = cv2.VideoCapture(self.config.camera_index, backend)
-        self._capture = capture
-        if not capture.isOpened():
-            self.camera_status.emit(
-                False,
-                f"Камера {self.config.camera_index} недоступна",
-            )
-            return
-
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.camera_status.emit(True, "Камера активна")
-
-        analysis_interval = 1.0 / self.config.analysis_fps
-        preview_interval = 1.0 / self.config.preview_fps
-        last_analysis = 0.0
-        last_preview = 0.0
-        last_error: dict[str, float] = {}
-        performance_started = time.monotonic()
-        captured_frames = 0
-        analyzed_frames = 0
-        phone_time_total = 0.0
-        gaze_time_total = 0.0
-
-        while not self._stop_event.is_set():
-            ok, frame = capture.read()
-            if not ok:
-                if self._stop_event.is_set():
-                    break
-                self.camera_status.emit(False, "Не удалось получить кадр")
-                break
-
-            with self._frame_lock:
-                self._latest_frame = frame
-            captured_frames += 1
-
-            now = time.monotonic()
-            if now - last_analysis >= analysis_interval:
-                events, errors = self.detectors.analyze(frame)
-                analyzed_frames += 1
-                phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
-                gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
-                for event in events:
-                    self.pipeline.submit(event, frame)
-                for message in errors:
-                    if now - last_error.get(message, 0.0) >= 5.0:
-                        self.analysis_error.emit(message)
-                        last_error[message] = now
-                last_analysis = now
-
-            performance_elapsed = now - performance_started
-            if performance_elapsed >= 5.0:
-                self.performance_ready.emit(
-                    captured_frames / performance_elapsed,
-                    analyzed_frames / performance_elapsed,
-                    phone_time_total / max(1, analyzed_frames),
-                    gaze_time_total / max(1, analyzed_frames),
-                )
-                performance_started = now
-                captured_frames = 0
-                analyzed_frames = 0
-                phone_time_total = 0.0
-                gaze_time_total = 0.0
-
-            if now - last_preview >= preview_interval:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                height, width, channels = rgb.shape
-                image = QImage(
-                    rgb.data,
-                    width,
-                    height,
-                    channels * width,
-                    QImage.Format.Format_RGB888,
-                ).copy()
-                self.frame_ready.emit(image)
-                last_preview = now
-            QThread.msleep(2)
 
 
 class TeacherReviewDialog(QDialog):
@@ -642,7 +498,10 @@ class MainWindow(QMainWindow):
         frame = self.camera_worker.snapshot() if self.camera_worker is not None else None
         self.pipeline.submit(event, frame)
 
-    def _show_frame(self, image: QImage) -> None:
+    def _show_frame(self) -> None:
+        image = self.camera_worker.take_preview() if self.camera_worker is not None else None
+        if image is None or self._shutdown_started:
+            return
         pixmap = QPixmap.fromImage(image)
         self.camera_label.setPixmap(
             pixmap.scaled(
