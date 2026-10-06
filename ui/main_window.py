@@ -51,6 +51,7 @@ EVENT_LABELS = {
     "window_switched": "Переключение окна",
     "suspicious_process": "Обнаружен запрещённый процесс",
     "capture_protection_failed": "Не удалось скрыть окно от захвата",
+    "remote_session": "Тест запущен через удалённую сессию",
 }
 
 

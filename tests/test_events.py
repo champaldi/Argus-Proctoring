@@ -49,6 +49,10 @@ class EventContractTests(unittest.TestCase):
         self.assertEqual(event.type, EventType.CAPTURE_PROTECTION_FAILED)
         self.assertEqual(event.details, {"target_hwnd": 100})
 
+    def test_remote_session_uses_shared_contract(self) -> None:
+        event = ProctorEvent.create("remote_session", source="security")
+        self.assertEqual(event.type, EventType.REMOTE_SESSION)
+
 
 if __name__ == "__main__":
     unittest.main()

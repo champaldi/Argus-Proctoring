@@ -9,6 +9,7 @@ from ctypes import WinDLL, wintypes
 
 WDA_NONE = 0x00
 WDA_EXCLUDEFROMCAPTURE = 0x11
+SM_REMOTESESSION = 0x1000
 
 
 class WindowsBackend:
@@ -79,6 +80,9 @@ class WindowsBackend:
 
     def release_capture(self, hwnd):
         return self._set_capture_affinity(hwnd, WDA_NONE)
+
+    def is_remote_session(self):
+        return bool(self.user32.GetSystemMetrics(SM_REMOTESESSION))
 
     def install_hook(self, callback):
         return self.keyboard.hook(callback, suppress=True)

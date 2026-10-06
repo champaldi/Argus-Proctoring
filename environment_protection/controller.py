@@ -145,6 +145,8 @@ class Protection:
                 session.capture_protected = self.backend.protect_capture(target)
                 if not session.capture_protected:
                     self._emit(session, "capture_protection_failed", target_hwnd=target)
+                if self.backend.is_remote_session():
+                    self._emit(session, "remote_session", protocol="rdp")
                 session.modifiers = {
                     f"left {name}" if name in {"ctrl", "alt", "shift"} else name
                     for name in self.backend.initial_modifiers()

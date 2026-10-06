@@ -26,6 +26,7 @@ class FakeDesktop:
         self.modifiers = set()
         self.capture_succeeds = True
         self.capture_calls = []
+        self.remote_session = False
 
     def resolve_target(self, hwnd):
         return (hwnd or 100), 10
@@ -40,6 +41,9 @@ class FakeDesktop:
     def release_capture(self, hwnd):
         self.capture_calls.append(("release", hwnd))
         return True
+
+    def is_remote_session(self):
+        return self.remote_session
 
     def install_hook(self, callback):
         if self.fail_install:
@@ -176,6 +180,13 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(self.events[0]["type"], "capture_protection_failed")
         self.assertEqual(self.events[0]["details"], {"target_hwnd": 100})
         self.assertFalse(self.protection.status()["capture_protected"])
+
+    def test_remote_windows_session_is_reported_once_at_start(self):
+        self.desktop.remote_session = True
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual([event["type"] for event in self.events], ["remote_session"])
+        self.assertEqual(self.events[0]["details"], {"protocol": "rdp"})
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()

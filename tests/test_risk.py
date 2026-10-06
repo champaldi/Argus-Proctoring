@@ -60,6 +60,10 @@ class RiskScorerTests(unittest.TestCase):
         update = self.scorer.add(self.event("capture_protection_failed"))
         self.assertEqual(update.weight, 15.0)
 
+    def test_remote_session_has_strong_security_weight(self) -> None:
+        update = self.scorer.add(self.event("remote_session"))
+        self.assertEqual(update.weight, 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,3 +116,10 @@ class WindowsBackendTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_remote_session_uses_windows_remote_session_metric(self):
+        self.backend.user32 = Mock()
+        self.backend.user32.GetSystemMetrics.return_value = 1
+
+        self.assertTrue(self.backend.is_remote_session())
+        self.backend.user32.GetSystemMetrics.assert_called_once_with(0x1000)
