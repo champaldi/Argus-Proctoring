@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .analyzer import (
+    CALIBRATION_MAX_SECONDS,
+    CALIBRATION_MIN_SECONDS,
     FACE_TOO_CLOSE_RATIO,
     FACE_TOO_CLOSE_SECONDS,
     AnalysisResult,
@@ -20,8 +22,10 @@ from .analyzer import (
     HeadPose,
     calibrate_default_analyzer,
     get_calibration_status,
+    get_diagnostics,
     get_face_width_ratio,
     get_last_result,
+    is_calibration_sample_valid,
     reset_default_analyzer,
     reset_default_timers,
 )
@@ -31,6 +35,8 @@ if TYPE_CHECKING:
     from events import ProctorEvent
 
 __all__ = [
+    "CALIBRATION_MAX_SECONDS",
+    "CALIBRATION_MIN_SECONDS",
     "FACE_TOO_CLOSE_RATIO",
     "FACE_TOO_CLOSE_SECONDS",
     "AnalysisResult",
@@ -41,8 +47,10 @@ __all__ = [
     "analyze",
     "calibrate_default_analyzer",
     "get_calibration_status",
+    "get_diagnostics",
     "get_face_width_ratio",
     "get_last_result",
+    "is_calibration_sample_valid",
     "reset_default_analyzer",
     "reset_default_timers",
 ]

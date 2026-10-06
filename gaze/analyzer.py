@@ -31,6 +31,8 @@ EVENT_TYPES: tuple[EventType, ...] = (
 
 FACE_TOO_CLOSE_RATIO = 0.45
 FACE_TOO_CLOSE_SECONDS = 3.0
+CALIBRATION_MIN_SECONDS = 2.0
+CALIBRATION_MAX_SECONDS = 8.0
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -134,6 +136,8 @@ class AnalyzerConfig:
     head_side_degrees: float = 25.0
     head_down_degrees: float = 35.0
     combined_down_degrees: float = 25.0
+    calibrated_head_down_degrees: float = 20.0
+    keyboard_down_margin_degrees: float = 3.0
     iris_side_threshold: float = 0.18
     iris_down_threshold: float = 0.30
     combined_iris_down_threshold: float = 0.16
@@ -175,10 +179,29 @@ class HeadPose:
 
 @dataclass(frozen=True)
 class FaceMetrics:
-    head_pose: HeadPose
+    head_pose: HeadPose | None
     iris_x: float | None = None
     iris_y: float | None = None
     iris_centers: tuple[tuple[float, float], ...] = ()
+
+
+def is_calibration_sample_valid(
+    sample: FaceMetrics | None, *, target: Literal["screen", "keyboard"] = "screen"
+) -> bool:
+    """Keyboard tilt may hide irises; its finite head pose is still usable."""
+    if target not in ("screen", "keyboard"):
+        raise ValueError("target must be 'screen' or 'keyboard'")
+    if sample is None:
+        return False
+    pose = sample.head_pose
+    if pose is None:
+        return False
+    if not all(math.isfinite(value) for value in (pose.pitch, pose.yaw, pose.roll)):
+        return False
+    eyes = (sample.iris_x, sample.iris_y)
+    if target == "screen":
+        return all(value is not None and math.isfinite(value) for value in eyes)
+    return all(value is None or math.isfinite(value) for value in eyes)
 
 
 @dataclass(frozen=True)
@@ -300,10 +323,8 @@ def measure_face(
 ) -> FaceMetrics | None:
     """Return head pose and iris location; iris centers approximate pupils."""
     pose = estimate_head_pose(landmarks, width, height)
-    if pose is None:
-        return None
     if len(landmarks) < 478:
-        return FaceMetrics(pose)
+        return FaceMetrics(pose) if pose is not None else None
     right = _measure_eye(landmarks, (33, 133, 159, 145, 468), width, height, min_eye_open_ratio)
     left = _measure_eye(landmarks, (362, 263, 386, 374, 473), width, height, min_eye_open_ratio)
     centers = tuple(
@@ -312,22 +333,27 @@ def measure_face(
         if math.isfinite(landmarks[i].x) and math.isfinite(landmarks[i].y)
     )
     if right is None or left is None:
-        return FaceMetrics(pose, iris_centers=centers)
+        return FaceMetrics(pose, iris_centers=centers) if pose is not None else None
     # Strong disagreement often means occlusion or an unreliable iris estimate.
     if abs(right[0] - left[0]) > 0.25 or abs(right[1] - left[1]) > 0.40:
-        return FaceMetrics(pose, iris_centers=centers)
+        return FaceMetrics(pose, iris_centers=centers) if pose is not None else None
     return FaceMetrics(pose, (right[0] + left[0]) / 2, (right[1] + left[1]) / 2, centers)
 
 
 def _median_metrics(samples: Sequence[FaceMetrics]) -> FaceMetrics:
-    pose = HeadPose(
-        *(
-            float(np.median([getattr(s.head_pose, axis) for s in samples]))
-            for axis in ("pitch", "yaw", "roll")
+    latest = samples[-1]
+    poses = [s.head_pose for s in samples if s.head_pose is not None]
+    pose = (
+        None
+        if latest.head_pose is None
+        else HeadPose(
+            *(
+                float(np.median([getattr(pose, axis) for pose in poses]))
+                for axis in ("pitch", "yaw", "roll")
+            )
         )
     )
     # Do not resurrect an iris estimate during a blink using previous frames.
-    latest = samples[-1]
     eyes = [s for s in samples if s.iris_x is not None and s.iris_y is not None]
     if latest.iris_x is None or latest.iris_y is None:
         return FaceMetrics(pose, iris_centers=latest.iris_centers)
@@ -361,7 +387,7 @@ class GazeAnalyzer:
 
             if not hasattr(mp, "solutions"):
                 raise RuntimeError(
-                    "Face Mesh requires mediapipe==0.10.21; install this project's requirements.txt"
+                    "Face Mesh requires mediapipe==0.10.21; install gaze/requirements.txt"
                 )
             _prepare_mediapipe_resources_for_windows(mp)
             face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -388,31 +414,124 @@ class GazeAnalyzer:
         self._history.clear()
         self._last_timestamp = None
         self._iris_missing_since: float | None = None
+        self._last_deferred_gaze: set[EventType] = set()
         self.last_result = AnalysisResult(0, None, (), [], {})
 
     def get_face_width_ratio(self) -> float | None:
         """Read the latest single-face width without performing inference."""
         return self.last_result.face_width_ratio
 
+    def get_calibration_status(self) -> dict[str, bool]:
+        return {"screen": self._screen is not None, "keyboard": self._keyboard is not None}
+
+    def export_calibration(self) -> dict[str, Any]:
+        """Save reference medians only, without frames or episode timers."""
+
+        def pack(reference: FaceMetrics | None) -> dict[str, Any] | None:
+            if reference is None:
+                return None
+            return {
+                "head_pose": asdict(reference.head_pose),
+                "iris_x": reference.iris_x,
+                "iris_y": reference.iris_y,
+            }
+
+        return {"version": 1, "screen": pack(self._screen), "keyboard": pack(self._keyboard)}
+
+    def import_calibration(self, profile: dict[str, Any]) -> None:
+        """Restore validated medians from the same user/camera configuration."""
+        if self._closed:
+            raise RuntimeError("Analyzer is closed")
+        if not isinstance(profile, dict) or type(profile.get("version")) is not int:
+            raise ValueError("Invalid calibration profile")
+        if profile["version"] != 1 or "screen" not in profile or "keyboard" not in profile:
+            raise ValueError("Unsupported or incomplete calibration profile")
+
+        def unpack(value: Any, target: Literal["screen", "keyboard"]) -> FaceMetrics | None:
+            if value is None:
+                return None
+            try:
+                pose = value["head_pose"]
+                numbers = [pose[name] for name in ("pitch", "yaw", "roll")]
+                iris_x, iris_y = value["iris_x"], value["iris_y"]
+                for number in (*numbers, iris_x, iris_y):
+                    if number is not None and (
+                        isinstance(number, bool) or not isinstance(number, (int, float))
+                    ):
+                        raise ValueError("Profile measurements must be numbers")
+                reference = FaceMetrics(HeadPose(*numbers), iris_x, iris_y)
+                if not is_calibration_sample_valid(reference, target=target):
+                    raise ValueError("Profile measurements are not valid")
+                return reference
+            except (KeyError, TypeError, AttributeError) as error:
+                raise ValueError("Invalid calibration measurements") from error
+
+        screen = unpack(profile["screen"], "screen")
+        keyboard = unpack(profile["keyboard"], "keyboard")
+        if keyboard is not None and screen is None:
+            raise ValueError("A keyboard profile needs a screen reference")
+        self._screen, self._keyboard = screen, keyboard
+        self.reset()
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        """JSON-friendly measurements for local threshold troubleshooting."""
+
+        def pack(metrics: FaceMetrics | None) -> dict[str, Any] | None:
+            return None if metrics is None else asdict(metrics)
+
+        raw = self._history[-1] if self._history else None
+        measured = self.last_result.metrics
+        screen = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
+        return {
+            "raw_metrics": pack(raw),
+            "smoothed_metrics": pack(measured),
+            "screen": pack(screen),
+            "keyboard": pack(self._keyboard),
+            "keyboard_zone": measured is not None and self._in_keyboard_zone(measured),
+            "head_unknown": measured is None or measured.head_pose is None,
+            "iris_unknown": measured is None or measured.iris_x is None or measured.iris_y is None,
+            "face_count": self.last_result.face_count,
+            "signals": list(self.last_result.signals),
+            "elapsed": dict(self.last_result.elapsed),
+            "face_width_ratio": self.last_result.face_width_ratio,
+            "deferred": sorted(self._last_deferred_gaze),
+            "config": asdict(self.config),
+            "episodes": {
+                name: {"started_at": episode.started_at, "emitted": episode.emitted}
+                for name, episode in self._episodes.items()
+            },
+            "down_thresholds": {
+                "head_degrees": self._down_thresholds()[0],
+                "combined_degrees": self._down_thresholds()[1],
+                "iris": self.config.iris_down_threshold,
+                "combined_iris": self.config.combined_iris_down_threshold,
+            },
+        }
+
     def calibrate(
         self, samples: Sequence[FaceMetrics], *, target: Literal["screen", "keyboard"] = "screen"
     ) -> None:
-        """Set a median reference using observed frames with one face/open eyes."""
+        """Learn a screen/keyboard reference from valid single-face frames."""
         if target not in ("screen", "keyboard"):
             raise ValueError("target must be 'screen' or 'keyboard'")
         if len(samples) < self.config.calibration_min_samples:
             raise ValueError(f"Need at least {self.config.calibration_min_samples} samples")
-        for sample in samples:
-            values = (
-                sample.head_pose.pitch,
-                sample.head_pose.yaw,
-                sample.head_pose.roll,
-                sample.iris_x,
-                sample.iris_y,
-            )
-            if any(v is None or not math.isfinite(v) for v in values):
-                raise ValueError("Calibration needs finite pose and both open eyes")
+        if not all(is_calibration_sample_valid(sample, target=target) for sample in samples):
+            requirement = "finite pose and both open eyes" if target == "screen" else "finite pose"
+            raise ValueError(f"Calibration needs {requirement}")
         reference = _median_metrics(samples)
+        if target == "keyboard":
+            # Use irises only when enough frames support them; a final blink
+            # must not discard an otherwise reliable keyboard-eye reference.
+            eyes = [s for s in samples if s.iris_x is not None and s.iris_y is not None]
+            if len(eyes) >= self.config.calibration_min_samples:
+                reference = FaceMetrics(
+                    reference.head_pose,
+                    float(np.median([s.iris_x for s in eyes])),
+                    float(np.median([s.iris_y for s in eyes])),
+                )
+            else:
+                reference = FaceMetrics(reference.head_pose)
         if target == "screen":
             self._screen = reference
             self._keyboard = None  # A changed camera reference invalidates the old zone.
@@ -425,36 +544,72 @@ class GazeAnalyzer:
     def _signals(self, metrics: FaceMetrics) -> tuple[EventType, ...]:
         cfg = self.config
         baseline = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
-        yaw = metrics.head_pose.yaw - baseline.head_pose.yaw
-        pitch = metrics.head_pose.pitch - baseline.head_pose.pitch
+        yaw = None if metrics.head_pose is None else metrics.head_pose.yaw - baseline.head_pose.yaw
+        pitch = (
+            None
+            if metrics.head_pose is None
+            else metrics.head_pose.pitch - baseline.head_pose.pitch
+        )
         iris_x = None if metrics.iris_x is None else metrics.iris_x - baseline.iris_x
         iris_y = None if metrics.iris_y is None else metrics.iris_y - baseline.iris_y
-        side = abs(yaw) >= cfg.head_side_degrees or (
+        head_down_degrees, combined_down_degrees = self._down_thresholds()
+        side = (yaw is not None and abs(yaw) >= cfg.head_side_degrees) or (
             iris_x is not None and abs(iris_x) >= cfg.iris_side_threshold
         )
-        down = pitch >= cfg.head_down_degrees or (
+        down = (pitch is not None and pitch >= head_down_degrees) or (
             iris_y is not None
             and (
                 iris_y >= cfg.iris_down_threshold
                 or (
-                    pitch >= cfg.combined_down_degrees
+                    pitch is not None
+                    and pitch >= combined_down_degrees
                     and iris_y >= cfg.combined_iris_down_threshold
                 )
             )
         )
+        if self._in_keyboard_zone(metrics):
+            down, side = False, False
+        return tuple(name for name, active in (("gaze_down", down), ("gaze_side", side)) if active)
+
+    def _down_thresholds(self) -> tuple[float, float]:
+        cfg = self.config
+        head = cfg.head_down_degrees
+        if self._screen is not None and self._keyboard is not None:
+            keyboard_delta = self._keyboard.head_pose.pitch - self._screen.head_pose.pitch
+            # Start beyond the learned keyboard band. The conservative default
+            # remains the cap, and applies unchanged before keyboard calibration.
+            head = min(
+                head,
+                max(
+                    cfg.calibrated_head_down_degrees,
+                    keyboard_delta
+                    + cfg.keyboard_pitch_tolerance
+                    + cfg.keyboard_down_margin_degrees,
+                ),
+            )
+        return head, min(cfg.combined_down_degrees, head)
+
+    def _in_keyboard_zone(self, metrics: FaceMetrics) -> bool:
         keyboard = self._keyboard
-        if keyboard is not None and metrics.iris_x is not None and metrics.iris_y is not None:
-            in_keyboard_zone = (
-                abs(metrics.head_pose.pitch - keyboard.head_pose.pitch)
-                <= cfg.keyboard_pitch_tolerance
-                and abs(metrics.head_pose.yaw - keyboard.head_pose.yaw)
-                <= cfg.keyboard_yaw_tolerance
-                and abs(metrics.iris_x - keyboard.iris_x) <= cfg.keyboard_iris_tolerance
+        if keyboard is None:
+            return False
+        cfg = self.config
+        in_zone = (
+            metrics.head_pose is not None
+            and abs(metrics.head_pose.pitch - keyboard.head_pose.pitch)
+            <= cfg.keyboard_pitch_tolerance
+            and abs(metrics.head_pose.yaw - keyboard.head_pose.yaw) <= cfg.keyboard_yaw_tolerance
+        )
+        if all(
+            value is not None
+            for value in (metrics.iris_x, metrics.iris_y, keyboard.iris_x, keyboard.iris_y)
+        ):
+            eyes_in_zone = (
+                abs(metrics.iris_x - keyboard.iris_x) <= cfg.keyboard_iris_tolerance
                 and abs(metrics.iris_y - keyboard.iris_y) <= cfg.keyboard_iris_tolerance
             )
-            if in_keyboard_zone:
-                down, side = False, False
-        return tuple(name for name, active in (("gaze_down", down), ("gaze_side", side)) if active)
+            in_zone = eyes_in_zone if metrics.head_pose is None else in_zone and eyes_in_zone
+        return in_zone
 
     def analyze(self, frame: np.ndarray, *, timestamp: float | None = None) -> list[dict[str, Any]]:
         """Emit each event once after continuous observation for its threshold.
@@ -475,7 +630,11 @@ class GazeAnalyzer:
         ):
             self.reset()
             raise ValueError("frame must be a nonempty HxWx3 uint8 BGR image")
-        now = float(self._clock() if timestamp is None else timestamp)
+        try:
+            now = float(self._clock() if timestamp is None else timestamp)
+        except Exception:
+            self.reset()
+            raise
         if not math.isfinite(now):
             self.reset()
             raise ValueError("timestamp must be finite")
@@ -486,13 +645,18 @@ class GazeAnalyzer:
             if now - self._last_timestamp > self.config.max_sample_gap_seconds:
                 self.reset()
         self._last_timestamp = now
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
         try:
-            detection = self._face_mesh.process(rgb)
+            return self._analyze_frame(frame, now)
         except Exception:
+            # No failed geometry/landmark read can carry a timer or stale ratio
+            # into the next successful observation.
             self.reset()
             raise
+
+    def _analyze_frame(self, frame: np.ndarray, now: float) -> list[dict[str, Any]]:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
+        detection = self._face_mesh.process(rgb)
         faces = detection.multi_face_landmarks or []
         count = len(faces)
         metrics = None
@@ -515,7 +679,14 @@ class GazeAnalyzer:
             else:
                 self._history.append(measured)
                 metrics = _median_metrics(list(self._history))
-                signals = self._signals(metrics)
+                fresh_signals = self._signals(measured)
+                signals = tuple(name for name in self._signals(metrics) if name in fresh_signals)
+                if (
+                    self._iris_missing_since is not None
+                    and now - self._iris_missing_since > self.config.iris_missing_grace_seconds
+                ):
+                    for name in self._last_deferred_gaze:
+                        self._episodes[name] = _Episode()
                 if metrics.iris_x is None or metrics.iris_y is None:
                     if self._iris_missing_since is None:
                         self._iris_missing_since = now
@@ -561,19 +732,23 @@ class GazeAnalyzer:
                 if face_width_ratio is not None:
                     event["face_width_ratio"] = face_width_ratio
                 if metrics is not None:
-                    event["head_pose"] = asdict(metrics.head_pose)
+                    if metrics.head_pose is not None:
+                        event["head_pose"] = asdict(metrics.head_pose)
                     event["iris_x"], event["iris_y"] = metrics.iris_x, metrics.iris_y
                 events.append(event)
         self.last_result = AnalysisResult(
             count, metrics, signals, events, elapsed, face_width_ratio
         )
+        self._last_deferred_gaze = deferred
         return events
 
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._face_mesh.close()
-            self.reset()
+            try:
+                self._face_mesh.close()
+            finally:
+                self.reset()
 
     def __enter__(self) -> GazeAnalyzer:
         if self._closed:
@@ -598,14 +773,19 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
 def reset_default_analyzer() -> None:
     """Release the convenience detector; the next analyze starts a new session."""
     global _default_analyzer
-    if _default_analyzer is not None:
-        _default_analyzer.close()
-        _default_analyzer = None
+    analyzer, _default_analyzer = _default_analyzer, None
+    if analyzer is not None:
+        analyzer.close()
 
 
 def get_last_result() -> AnalysisResult | None:
     """Read on the inference worker thread; never creates a detector."""
     return None if _default_analyzer is None else _default_analyzer.last_result
+
+
+def get_diagnostics() -> dict[str, Any] | None:
+    """Read current measurements and decisions without creating a detector."""
+    return None if _default_analyzer is None else _default_analyzer.get_diagnostics()
 
 
 def get_face_width_ratio() -> float | None:
@@ -615,10 +795,11 @@ def get_face_width_ratio() -> float | None:
 
 def get_calibration_status() -> dict[str, bool]:
     """Return calibration flags without opening any resources."""
-    return {
-        "screen": _default_analyzer is not None and _default_analyzer._screen is not None,
-        "keyboard": _default_analyzer is not None and _default_analyzer._keyboard is not None,
-    }
+    return (
+        {"screen": False, "keyboard": False}
+        if _default_analyzer is None
+        else _default_analyzer.get_calibration_status()
+    )
 
 
 def reset_default_timers() -> None:
