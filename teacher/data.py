@@ -52,6 +52,12 @@ class Session:
         return f"Не указан · {self.id[:8]}"
 
     @property
+    def reference_photo(self) -> str | None:
+        """Путь к контрольному кадру студента из начала теста, если он снят."""
+        value = self.metadata.get("reference_photo")
+        return value if isinstance(value, str) and value.strip() else None
+
+    @property
     def duration_seconds(self) -> float:
         end = self.ended_at or datetime.now(timezone.utc)
         return max(0.0, (end - self.started_at).total_seconds())
@@ -119,6 +125,20 @@ def load_sessions(database_path: Path) -> list[Session]:
             events=tuple(by_session[row["id"]]),
         ))
     return sessions
+
+
+def resolve_evidence_path(database_path: Path, value: str | None) -> Path | None:
+    """Находит кадр и для абсолютного пути, и для пути относительно базы."""
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_file():
+        return path
+    if not path.is_absolute():
+        candidate = database_path.parent / path
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def recalculate_risk(session: Session, false_positive_ids: Iterable[str] = ()) -> float:

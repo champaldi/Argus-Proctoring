@@ -42,9 +42,12 @@ from .data import (
     export_roster,
     load_sessions,
     recalculate_risk,
+    resolve_evidence_path,
     risk_zone,
     summarize_events,
 )
+from .conclusion import build_conclusion
+from .report import default_report_name, write_session_report
 
 
 ZONE_COLORS = {"low": "#55d6a9", "medium": "#f0c45d", "high": "#ef6262"}
@@ -338,10 +341,25 @@ class TeacherWindow(QMainWindow):
         back.clicked.connect(self._back)
         top.addWidget(back)
         top.addStretch()
+        report_button = QPushButton("Сохранить отчёт")
+        report_button.setObjectName("secondary")
+        report_button.setToolTip("Отчёт по сессии одним HTML-файлом с кадрами")
+        report_button.clicked.connect(lambda: self._export_report(session))
+        top.addWidget(report_button)
         root.addLayout(top)
         heading = QLabel(session.student_name)
         heading.setObjectName("heading")
         root.addWidget(heading)
+        reference_path = resolve_evidence_path(self.database_path, session.reference_photo)
+        reference = QPixmap(str(reference_path)) if reference_path is not None else QPixmap()
+        if not reference.isNull():
+            photo = QLabel()
+            photo.setPixmap(reference.scaledToWidth(
+                220, Qt.TransformationMode.SmoothTransformation
+            ))
+            photo.setToolTip("Контрольный кадр в начале теста. Личность сверяет преподаватель.")
+            root.addWidget(photo)
+            root.addWidget(QLabel("Контрольный кадр в начале теста"))
         started = session.started_at.astimezone().strftime("%d.%m.%Y %H:%M")
         root.addWidget(QLabel(
             f"{started}  ·  {_duration_text(session.duration_seconds)}  ·  "
@@ -357,6 +375,17 @@ class TeacherWindow(QMainWindow):
         risk_layout.addWidget(risk_label)
         risk_layout.addWidget(QLabel(f"Риск в исходном журнале: {session.final_risk:.1f}"))
         root.addWidget(risk_card)
+
+        conclusion_card, conclusion_layout = _card()
+        title = QLabel("Заключение системы")
+        title.setObjectName("section")
+        conclusion_layout.addWidget(title)
+        conclusion_label = QLabel(
+            build_conclusion(session, review.false_positive_ids).as_text()
+        )
+        conclusion_label.setWordWrap(True)
+        conclusion_layout.addWidget(conclusion_label)
+        root.addWidget(conclusion_card)
 
         summary_card, summary_layout = _card()
         title = QLabel("Сводка нарушений")
@@ -539,6 +568,22 @@ class TeacherWindow(QMainWindow):
     def _back(self) -> None:
         self.reload_sessions()
         self.pages.setCurrentIndex(0)
+
+    def _export_report(self, session: Session) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить отчёт по сессии", default_report_name(session), "HTML (*.html)"
+        )
+        if not filename:
+            return
+        try:
+            write_session_report(
+                Path(filename), session, self.reviews.load_review(session.id),
+                self.database_path,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Не удалось сохранить отчёт", str(exc))
+            return
+        self.statusBar().showMessage(f"Отчёт сохранён: {filename}", 6000)
 
     def _export(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(

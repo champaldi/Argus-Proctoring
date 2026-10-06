@@ -177,6 +177,10 @@ class CameraWorker(QObject):
                 # when capture has advanced or shutdown began during inference.
                 for event in events:
                     self.pipeline.submit(event, frame)
+                if not events:
+                    # A calm frame from the start of the test becomes the
+                    # control photo shown to the teacher next to the name.
+                    self.pipeline.offer_reference_frame(frame)
                 now = time.monotonic()
                 for message in errors:
                     if now - last_error.get(message, float("-inf")) >= 5.0:

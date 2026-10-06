@@ -46,6 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_events_session_time
 ON events(session_id, occurred_at);
 """
 
+REFERENCE_PHOTO_NAME = "reference.jpg"
+
 
 @dataclass(frozen=True, slots=True)
 class StoredEvent:
@@ -133,6 +135,36 @@ class EventStore:
         destination = session_dir / f"{timestamp}_{event.type.value}_{event.event_id[:8]}.jpg"
         write_image(destination, frame)
         return str(destination.resolve())
+
+    def save_reference_photo(self, session_id: str, frame: Any) -> str:
+        """Store the student's control photo and remember its path in the session.
+
+        The teacher compares this frame with the person they expect; the
+        application itself performs no face recognition.
+        """
+        session_dir = self.screenshots_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        destination = session_dir / REFERENCE_PHOTO_NAME
+        write_image(destination, frame)
+        path = str(destination.resolve())
+        row = self.connection.execute(
+            "SELECT metadata_json FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"session not found: {session_id}")
+        try:
+            metadata = json.loads(row[0] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["reference_photo"] = path
+        self.connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, default=str), session_id),
+        )
+        self.connection.commit()
+        return path
 
     def record_event(
         self,
