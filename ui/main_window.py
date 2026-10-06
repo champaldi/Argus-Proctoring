@@ -28,6 +28,7 @@ from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
 from core.event_presentation import EVENT_LABELS, application_details
 from core.security import SecurityAdapter
+from core.student import session_metadata, student_name_from_env
 from core.storage import (
     StoredEvent,
     load_session_events,
@@ -222,9 +223,10 @@ class TeacherReviewDialog(QDialog):
 class MainWindow(QMainWindow):
     shutdown_finished = Signal()
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, student_name: str | None = None) -> None:
         super().__init__()
         self.config = config
+        self.student_name = student_name
         self.answers: dict[int, int] = {}
         self.question_index = 0
         self._shutdown_done = False
@@ -241,6 +243,7 @@ class MainWindow(QMainWindow):
             config.database_path,
             config.screenshots_dir,
             on_error=self.bridge.pipeline_error.emit,
+            metadata=session_metadata(student_name),
         )
         self.pipeline.start()
 
@@ -570,7 +573,16 @@ class MainWindow(QMainWindow):
 def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Proctoring")
-    window = MainWindow(config)
+    # Camera, protection and the session start only after consent and a name.
+    student_name = student_name_from_env()
+    if student_name is None:
+        from ui.student_start import StudentStartDialog
+
+        start = StudentStartDialog()
+        if start.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        student_name = start.student_name()
+    window = MainWindow(config, student_name)
     window.show()
     try:
         return app.exec()
