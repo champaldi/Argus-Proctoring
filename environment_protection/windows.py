@@ -119,3 +119,19 @@ class WindowsBackend:
             except (self.psutil.NoSuchProcess, self.psutil.AccessDenied):
                 continue
         return result
+
+    def services(self):
+        result = []
+        for service in self.psutil.win_service_iter():
+            try:
+                info = service.as_dict()
+                result.append(
+                    {
+                        "name": info.get("name"),
+                        "display_name": info.get("display_name"),
+                        "status": info.get("status"),
+                    }
+                )
+            except (self.psutil.Error, OSError):
+                continue
+        return result

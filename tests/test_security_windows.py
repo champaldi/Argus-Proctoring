@@ -93,3 +93,26 @@ class WindowsBackendTests(unittest.TestCase):
             [call.args for call in user32.SetWindowDisplayAffinity.call_args_list],
             [(100, 0x11), (100, 0x00)],
         )
+
+    def test_service_snapshot_returns_complete_windows_service_identity(self):
+        services = [
+            SimpleNamespace(
+                as_dict=lambda: {
+                    "name": "TeamViewer",
+                    "display_name": "TeamViewer Remote",
+                    "status": "running",
+                }
+            )
+        ]
+        self.backend.psutil.win_service_iter = Mock(return_value=services)
+
+        self.assertEqual(
+            self.backend.services(),
+            [
+                {
+                    "name": "TeamViewer",
+                    "display_name": "TeamViewer Remote",
+                    "status": "running",
+                }
+            ],
+        )

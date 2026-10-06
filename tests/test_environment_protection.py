@@ -20,6 +20,7 @@ class FakeDesktop:
         self.restores = []
         self.hook = None
         self.process_list = []
+        self.service_list = []
         self.fail_install = False
         self.fail_remove = False
         self.modifiers = set()
@@ -68,6 +69,9 @@ class FakeDesktop:
 
     def processes(self):
         return list(self.process_list)
+
+    def services(self):
+        return list(self.service_list)
 
 
 def key(name, scan_code, kind="down"):
@@ -337,6 +341,41 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(all(e["type"] == "suspicious_process" for e in self.events))
         self.desktop.process_list[-1]["create_time"] = 4  # PID reuse is a new process.
         self.assertTrue(wait_for(lambda: len(self.events) == 2))
+
+    def test_remote_access_process_families_are_reported(self):
+        names = [
+            "AnyDesk.exe",
+            "rustdesk.exe",
+            "parsecd.exe",
+            "TeamViewer.exe",
+            "winvnc.exe",
+            "remoting_host.exe",
+            "QuickAssist.exe",
+        ]
+        self.desktop.process_list = [
+            {"pid": 20 + index, "ppid": 1, "name": name, "create_time": index}
+            for index, name in enumerate(names)
+        ]
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        reported = {item["name"].casefold() for item in self.events[0]["details"]["processes"]}
+        self.assertEqual(reported, {name.casefold() for name in names})
+
+    def test_remote_access_services_share_one_software_event_with_processes(self):
+        self.desktop.process_list = [
+            {"pid": 20, "ppid": 1, "name": "AnyDesk.exe", "create_time": 1}
+        ]
+        self.desktop.service_list = [
+            {"name": "TeamViewer", "display_name": "TeamViewer", "status": "running"},
+            {"name": "chromoting", "display_name": "Chrome Remote Desktop", "status": "running"},
+            {"name": "RustDesk", "display_name": "RustDesk Service", "status": "stopped"},
+        ]
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual(len(self.events), 1)
+        details = self.events[0]["details"]
+        self.assertEqual({item["name"] for item in details["services"]}, {"TeamViewer", "chromoting"})
+        self.assertEqual(details["count"], 3)
 
     def test_events_pass_existing_adapter_and_sqlite_pipeline(self):
         import tempfile

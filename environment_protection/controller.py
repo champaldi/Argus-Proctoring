@@ -29,6 +29,35 @@ DEFAULT_PROCESS_NAMES = frozenset(
         "teams.exe",
         "ms-teams.exe",
         "skype.exe",
+        "anydesk.exe",
+        "rustdesk.exe",
+        "parsec.exe",
+        "parsecd.exe",
+        "pservice.exe",
+        "teamviewer.exe",
+        "teamviewer_service.exe",
+        "winvnc.exe",
+        "vncserver.exe",
+        "tvnserver.exe",
+        "uvnc_service.exe",
+        "remoting_host.exe",
+        "chromoting_host.exe",
+        "quickassist.exe",
+        "msra.exe",
+    }
+)
+DEFAULT_SERVICE_NAMES = frozenset(
+    {
+        "anydesk",
+        "rustdesk",
+        "parsec",
+        "teamviewer",
+        "winvnc",
+        "vncserver",
+        "tvnserver",
+        "uvnc_service",
+        "chromoting",
+        "chrome remote desktop",
     }
 )
 
@@ -39,6 +68,7 @@ class ProtectionConfig:
     process_interval: float = 2.0
     max_seconds: float = 900.0
     blocked_process_names: frozenset[str] = DEFAULT_PROCESS_NAMES
+    blocked_service_names: frozenset[str] = DEFAULT_SERVICE_NAMES
 
     def __post_init__(self):
         for name in ("poll_interval", "process_interval", "max_seconds"):
@@ -49,6 +79,11 @@ class ProtectionConfig:
             self,
             "blocked_process_names",
             frozenset(name.casefold() for name in self.blocked_process_names),
+        )
+        object.__setattr__(
+            self,
+            "blocked_service_names",
+            frozenset(name.casefold() for name in self.blocked_service_names),
         )
 
 
@@ -63,6 +98,7 @@ class _Session:
     modifiers: set[str] = field(default_factory=set)
     blocked_keys: set[int] = field(default_factory=set)
     seen_processes: set[tuple[int, float | None]] = field(default_factory=set)
+    seen_services: set[str] = field(default_factory=set)
     remove_hook: Callable | None = None
     capture_protected: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -350,13 +386,37 @@ class Protection:
                     {"pid": pid, "name": process["name"], "create_time": process.get("create_time")}
                 )
         session.seen_processes = seen
-        if newly_detected:
+        running_services = []
+        for service in self.backend.services():
+            if (service.get("status") or "").casefold() != "running":
+                continue
+            name = (service.get("name") or "").casefold()
+            display_name = (service.get("display_name") or "").casefold()
+            if (
+                name not in self.config.blocked_service_names
+                and display_name not in self.config.blocked_service_names
+            ):
+                continue
+            running_services.append(service)
+        service_identities = {
+            (service.get("name") or service.get("display_name") or "").casefold()
+            for service in running_services
+        }
+        new_services = [
+            service
+            for service in running_services
+            if (service.get("name") or service.get("display_name") or "").casefold()
+            not in session.seen_services
+        ]
+        session.seen_services = service_identities
+        if newly_detected or new_services:
             # The host has a cooldown per event TYPE, not per process. Keep
             # simultaneous observations together so siblings reach SQLite.
             self._emit(
                 session,
                 "suspicious_process",
                 processes=newly_detected,
-                count=len(newly_detected),
+                services=new_services,
+                count=len(newly_detected) + len(new_services),
                 action="reported",
             )
