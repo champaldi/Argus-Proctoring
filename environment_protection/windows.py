@@ -99,11 +99,18 @@ class WindowsBackend:
     def lock_window(self, hwnd):
         """Keep the test window above all others and make it fill the screen.
 
-        Another program can then neither be placed over the test nor shown
-        beside it. Requests are asynchronous so a caller on a worker thread is
+        Requests are asynchronous so a caller on a worker thread is
         never blocked by the window's own thread.
         """
         try:
+            # Complete checks before pinning: on failure the controller must
+            # never lose track of an already-applied topmost flag.
+            if not self._covers_monitor(hwnd):
+                show = self.user32.ShowWindowAsync
+                show.argtypes = (wintypes.HWND, wintypes.INT)
+                show.restype = wintypes.BOOL
+                if not show(hwnd, self.con.SW_MAXIMIZE):
+                    return False
             self.gui.SetWindowPos(
                 hwnd,
                 self.con.HWND_TOPMOST,
@@ -113,9 +120,6 @@ class WindowsBackend:
                 0,
                 self.con.SWP_NOMOVE | self.con.SWP_NOSIZE | self.con.SWP_ASYNCWINDOWPOS,
             )
-            # A window the application already shows full screen is left alone.
-            if not self._covers_monitor(hwnd):
-                self.user32.ShowWindowAsync(hwnd, self.con.SW_MAXIMIZE)
         except Exception:
             return False
         return True

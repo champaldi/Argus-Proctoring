@@ -120,8 +120,39 @@ class WindowsBackendTests(unittest.TestCase):
     def test_window_lock_failure_is_reported_as_false(self):
         gui = Mock()
         gui.SetWindowPos.side_effect = RuntimeError("denied")
+        with (patch.object(self.backend, "gui", gui),
+              patch.object(self.backend, "_covers_monitor", return_value=True)):
+            self.assertFalse(self.backend.lock_window(100))
+        gui.SetWindowPos.assert_called_once()
+
+    def test_window_geometry_failure_does_not_leave_topmost_set(self):
+        gui = Mock()
+        gui.GetWindowRect.side_effect = RuntimeError("window disappeared")
         with patch.object(self.backend, "gui", gui):
             self.assertFalse(self.backend.lock_window(100))
+        gui.SetWindowPos.assert_not_called()
+
+    def test_failed_maximize_does_not_report_a_successful_window_lock(self):
+        user32 = Mock()
+        user32.ShowWindowAsync.return_value = 0
+        with (patch.object(self.backend, "_covers_monitor", return_value=False),
+              patch.object(self.backend, "gui") as gui,
+              patch.object(self.backend, "user32", user32)):
+            self.assertFalse(self.backend.lock_window(100))
+            gui.SetWindowPos.assert_not_called()
+
+    def test_async_maximize_uses_pointer_sized_window_handle(self):
+        from ctypes import wintypes
+        user32 = Mock()
+        hwnd = 0x123456789
+        with (patch.object(self.backend, "_covers_monitor", return_value=False),
+              patch.object(self.backend, "gui"),
+              patch.object(self.backend, "user32", user32)):
+            self.assertTrue(self.backend.lock_window(hwnd))
+        function = user32.ShowWindowAsync
+        self.assertEqual(function.argtypes, (wintypes.HWND, wintypes.INT))
+        self.assertEqual(function.restype, wintypes.BOOL)
+        function.assert_called_once_with(hwnd, self.backend.con.SW_MAXIMIZE)
 
     def test_capture_affinity_uses_exclusion_and_restores_normal_rendering(self):
         user32 = Mock()

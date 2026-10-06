@@ -29,6 +29,7 @@ class FakeDesktop:
         self.capture_release_succeeds = True
         self.capture_calls = []
         self.lock_succeeds = True
+        self.unlock_succeeds = True
         self.lock_calls = []
         self.remote_session = False
         self.monitor_count_value = 1
@@ -54,7 +55,7 @@ class FakeDesktop:
 
     def unlock_window(self, hwnd):
         self.lock_calls.append(("unlock", hwnd))
-        return True
+        return self.unlock_succeeds
 
     def is_remote_session(self):
         return self.remote_session
@@ -313,6 +314,19 @@ class ProtectionTests(unittest.TestCase):
             self.start()
         self.desktop.capture_release_succeeds = True
         self.protection.disable()
+        self.start()
+
+    def test_restart_is_refused_until_window_is_unpinned(self):
+        self.start()
+        self.desktop.unlock_succeeds = False
+        self.protection.disable()
+        self.assertTrue(self.protection.status()["window_locked"])
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.assertIn("window", self.protection.status()["last_error"])
+        self.desktop.unlock_succeeds = True
+        self.protection.disable()
+        self.assertFalse(self.protection.status()["window_locked"])
         self.start()
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):

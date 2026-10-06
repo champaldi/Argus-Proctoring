@@ -155,6 +155,7 @@ class Protection:
                     previous.remove_hook
                     or previous.remove_input_hook
                     or previous.capture_protected
+                    or previous.window_locked
                     or any(t.is_alive() for t in previous.threads)
                 ):
                     raise RuntimeError("Previous protection session is still shutting down")
@@ -253,6 +254,8 @@ class Protection:
                 else:
                     if unlocked:
                         session.window_locked = False
+                    else:
+                        session.error = "RuntimeError: Could not release window lock"
             if session.capture_protected:
                 try:
                     released = self.backend.release_capture(session.hwnd)
