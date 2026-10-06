@@ -14,10 +14,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -71,7 +69,6 @@ QUESTIONS = (
 
 
 class UiBridge(QObject):
-    event_recorded = Signal(object)
     pipeline_error = Signal(str)
 
 
@@ -239,12 +236,10 @@ class MainWindow(QMainWindow):
         self._shutdown_timer.timeout.connect(self._continue_shutdown)
 
         self.bridge = UiBridge()
-        self.bridge.event_recorded.connect(self._on_event_recorded)
         self.bridge.pipeline_error.connect(self._show_runtime_error)
         self.pipeline = EventPipeline(
             config.database_path,
             config.screenshots_dir,
-            on_recorded=self.bridge.event_recorded.emit,
             on_error=self.bridge.pipeline_error.emit,
         )
         self.pipeline.start()
@@ -256,9 +251,6 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._render_question()
-        self.risk_timer = QTimer(self)
-        self.risk_timer.timeout.connect(self._refresh_risk)
-        self.risk_timer.start(1000)
         QTimer.singleShot(0, self.start_monitoring)
 
     def _build_ui(self) -> None:
@@ -283,10 +275,6 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background: #7290ff; }
             QPushButton:disabled { background: #34415e; color: #8290aa; }
             QPushButton#secondary { background: #202d49; }
-            QProgressBar { border: 0; border-radius: 7px; background: #202a40;
-                           height: 14px; text-align: center; }
-            QProgressBar::chunk { background: #5d7df6; border-radius: 7px; }
-            QListWidget { background: transparent; border: 0; color: #b9c4da; }
             """
         )
 
@@ -380,19 +368,7 @@ class MainWindow(QMainWindow):
             camera_layout.addWidget(label)
         layout.addWidget(camera_card)
 
-        risk_card, risk_layout = self._card()
-        risk_title = QLabel("Уровень риска")
-        risk_title.setObjectName("question")
-        risk_layout.addWidget(risk_title)
-        self.risk_bar = QProgressBar()
-        self.risk_bar.setRange(0, 100)
-        self.risk_bar.setValue(0)
-        self.risk_bar.setFormat("0 / 100")
-        risk_layout.addWidget(self.risk_bar)
-        self.event_list = QListWidget()
-        self.event_list.setMinimumHeight(120)
-        risk_layout.addWidget(self.event_list)
-        layout.addWidget(risk_card, 1)
+        layout.addStretch(1)
         return container
 
     def _render_question(self) -> None:
@@ -548,38 +524,6 @@ class MainWindow(QMainWindow):
         )
         self._set_status(self.performance_status_label, "Скорость", True, message)
 
-    def _update_risk_display(self, risk: float) -> None:
-        self.risk_bar.setValue(max(0, min(100, round(risk))))
-        self.risk_bar.setFormat(f"{risk:.1f} / 100")
-        if risk > RISK_RED_ABOVE:
-            chunk = "#ef6262"
-        elif risk >= RISK_YELLOW_FROM:
-            chunk = "#f0c45d"
-        else:
-            chunk = "#55d6a9"
-        self.risk_bar.setStyleSheet(
-            f"QProgressBar::chunk {{ background: {chunk}; border-radius: 7px; }}"
-        )
-
-    def _refresh_risk(self) -> None:
-        if not self._shutdown_done:
-            self._update_risk_display(self.pipeline.current_risk().total)
-
-    def _on_event_recorded(self, stored: StoredEvent) -> None:
-        data = stored.to_dict()
-        risk = float(data["risk_total"])
-        self._update_risk_display(risk)
-        event_name = str(data["type"])
-        label = EVENT_LABELS.get(event_name, event_name)
-        details = application_details(stored.event)
-        if details:
-            label += " · " + "; ".join(details)
-        time_label = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
-        self.event_list.insertItem(0, f"{time_label}  {label}  +{stored.weight:g}")
-        self.event_list.item(0).setToolTip(self.event_list.item(0).text())
-        while self.event_list.count() > 8:
-            self.event_list.takeItem(self.event_list.count() - 1)
-
     def _show_runtime_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 7000)
 
@@ -589,7 +533,6 @@ class MainWindow(QMainWindow):
             return True
         if not self._shutdown_started:
             self._shutdown_started = True
-            self.risk_timer.stop()
             self.next_button.setEnabled(False)
             self.previous_button.setEnabled(False)
             if self.camera_worker is not None:

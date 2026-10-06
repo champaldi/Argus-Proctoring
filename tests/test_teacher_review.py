@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QListWidget, QProgressBar
 
 from config import AppConfig
 from core.storage import EventStore, StoredEvent, load_session_events
@@ -73,12 +73,12 @@ class TeacherReviewDialogTests(unittest.TestCase):
                 self.assertIn(expected, text)
                 self.assertNotIn("None", text)
 
-    def test_live_event_feed_identifies_the_application(self) -> None:
+    def test_student_has_no_risk_feed_but_events_are_saved_for_teacher(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = replace(AppConfig.from_env(), data_dir=root,
                              database_path=root / "events.db", screenshots_dir=root / "shots")
-            # The feed can be tested without starting the camera or global OS hooks.
+            # Check presentation and persistence without camera or global OS hooks.
             with patch.object(MainWindow, "start_monitoring", lambda window: None):
                 window = MainWindow(config)
                 try:
@@ -86,9 +86,18 @@ class TeacherReviewDialogTests(unittest.TestCase):
                     event = ProctorEvent.create("suspicious_process", source="security", details={
                         "processes": [{"name": "AnyDesk.exe", "pid": 1234}],
                     })
-                    window._on_event_recorded(StoredEvent(event, 15, 15, None))
-                    self.assertIn("AnyDesk.exe", window.event_list.item(0).text())
-                    self.assertIn("1234", window.event_list.item(0).text())
+                    self.assertTrue(window.pipeline.submit(event))
+                    self.assertTrue(window.pipeline.stop())
+                    self.app.processEvents()
+                    self.assertFalse(window.findChildren(QListWidget))
+                    self.assertFalse(window.findChildren(QProgressBar))
+                    text = "\n".join(label.text() for label in window.findChildren(QLabel))
+                    self.assertNotIn("Уровень риска", text)
+                    self.assertNotIn("AnyDesk.exe", text)
+                    saved = load_session_events(config.database_path, window.pipeline.session_id)
+                    self.assertEqual(len(saved), 1)
+                    self.assertEqual(saved[0].event.details["processes"][0]["name"], "AnyDesk.exe")
+                    self.assertEqual(saved[0].weight, 15)
                 finally:
                     window.close()
                     for _ in range(300):
