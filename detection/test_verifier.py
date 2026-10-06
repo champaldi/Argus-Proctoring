@@ -48,6 +48,16 @@ class VerifierTests(unittest.TestCase):
             second = verifier._get_model_data()
         self.assertIs(first, second)
 
+    def test_release_keeps_shared_model_until_last_detector_closes(self):
+        shared = object()
+        with patch.object(verifier, "_model_data", shared), patch.object(verifier, "_users", 0):
+            verifier.warmup()
+            verifier.warmup()
+            verifier.release()
+            self.assertIs(verifier._model_data, shared)
+            verifier.release()
+            self.assertIsNone(verifier._model_data)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,7 @@ def main() -> int:
     """Читает кадры до нажатия q и показывает рамки объектов."""
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
     camera = cv2.VideoCapture(0, backend)
+    detector: PhoneDetector | None = None
     try:
         if not camera.isOpened():
             print("Не удалось открыть веб-камеру 0", file=sys.stderr)
@@ -88,8 +89,12 @@ def main() -> int:
                     raise OSError(f"Не удалось сохранить кадр: {path}")
                 print(f"Сохранён кадр: {path}", flush=True)
     finally:
-        camera.release()
-        cv2.destroyAllWindows()
+        try:
+            if detector is not None:
+                detector.close()
+        finally:
+            camera.release()
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

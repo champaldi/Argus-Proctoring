@@ -303,6 +303,42 @@ class PhoneDetectorTests(unittest.TestCase):
         self.assertEqual(path.parent, Path(phone_module.__file__).resolve().parent)
         self.assertEqual(path.name, "yolov8s.pt")
 
+    def test_close_releases_models_and_rejects_new_frames(self):
+        class ClosableModel(FakeModel):
+            def __init__(self):
+                super().__init__([[box(67)]])
+                self.closed = 0
+
+            def close(self):
+                self.closed += 1
+
+        model = ClosableModel()
+        with patch.object(phone_module, "USE_VERIFIER", True), patch(
+            "detection.verifier.warmup"
+        ), patch("detection.verifier.release") as release, patch(
+            "detection.verifier.verify_phone", return_value=0.8
+        ):
+            detector = PhoneDetector(model=model)
+            detector.detect(FRAME, timestamp=0)
+            detector.close()
+            detector.close()
+        self.assertEqual(model.closed, 1)
+        release.assert_called_once()
+        self.assertIsNone(detector.model)
+        self.assertEqual(detector.verifier_cache, [])
+        self.assertEqual(detector.last_detections, [])
+        with self.assertRaises(RuntimeError):
+            detector.detect(FRAME)
+
+    def test_reset_default_detector_closes_old_instance(self):
+        detector = PhoneDetector(model=FakeModel([]))
+        with patch.object(phone_module, "_default_detector", detector), patch.object(
+            detector, "close"
+        ) as close:
+            phone_module.reset_default_detector()
+            self.assertIsNone(phone_module._default_detector)
+        close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

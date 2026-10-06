@@ -207,16 +207,39 @@ class PhoneDetector:
         if model is None:
             model = load_model()
         self.model = model
+        self._closed = False
+        self._verifier_acquired = False
         self.verifier_enabled = USE_VERIFIER
         if self.verifier_enabled:
             try:
                 from .verifier import warmup
 
                 warmup()
+                self._verifier_acquired = True
             except Exception as error:
                 self.verifier_enabled = False
                 _warn_verifier_unavailable(error)
         self.reset()
+
+    def close(self) -> None:
+        """Освобождает модели и наблюдения; повторный вызов безопасен."""
+        if self._closed:
+            return
+        self._closed = True
+        model = self.model
+        self.model = None
+        self.verifier_enabled = False
+        self.reset()
+        try:
+            close_model = getattr(model, "close", None)
+            if callable(close_model):
+                close_model()
+        finally:
+            if self._verifier_acquired:
+                from .verifier import release
+
+                release()
+                self._verifier_acquired = False
 
     def reset(self) -> None:
         """Начинает новую сессию без повторной загрузки весов."""
@@ -280,6 +303,8 @@ class PhoneDetector:
 
     def detect(self, frame: np.ndarray, *, timestamp: float | None = None) -> list[ProctorEvent]:
         """Обрабатывает один BGR-кадр и возвращает новые события."""
+        if self._closed:
+            raise RuntimeError("PhoneDetector is closed")
         if (
             not isinstance(frame, np.ndarray)
             or frame.dtype != np.uint8
@@ -408,6 +433,9 @@ def detect(frame: np.ndarray) -> list[ProctorEvent]:
 
 
 def reset_default_detector() -> None:
-    """Сбрасывает состояние функции detect перед новой сессией."""
+    """Закрывает модель функции detect перед новой сессией."""
     global _default_detector
+    previous = _default_detector
     _default_detector = None
+    if previous is not None:
+        previous.close()
