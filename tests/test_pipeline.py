@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -83,6 +84,52 @@ class PipelineTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(row, (25.0, "not_cheated"))
+
+    def test_stored_final_risk_is_the_session_peak(self) -> None:
+        now = [0.0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(
+                root / "events.db",
+                root / "screenshots",
+                scorer=RiskScorer(clock=lambda: now[0]),
+            )
+            pipeline.start()
+            pipeline.submit(ProctorEvent.create("phone_detected", source="test"))
+            session_id = pipeline.session_id
+            deadline = time.monotonic() + 5
+            while pipeline.peak_risk().total < 25.0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            now[0] = 30 * 60.0
+            self.assertEqual(pipeline.current_risk().total, 0.0)
+            pipeline.stop()
+
+            connection = sqlite3.connect(root / "events.db")
+            try:
+                final_risk = connection.execute(
+                    "SELECT final_risk FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(final_risk, 25.0)
+
+    def test_second_process_report_is_not_dropped_by_cooldown(self) -> None:
+        recorded = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(
+                root / "events.db",
+                root / "screenshots",
+                on_recorded=recorded.append,
+                scorer=RiskScorer(clock=lambda: 0.0),
+            )
+            pipeline.start()
+            first = pipeline.submit(ProctorEvent.create("suspicious_process", source="test"))
+            second = pipeline.submit(ProctorEvent.create("suspicious_process", source="test"))
+            pipeline.stop()
+
+            self.assertTrue(first and second)
+            self.assertEqual(len(recorded), 2)
 
 
 if __name__ == "__main__":

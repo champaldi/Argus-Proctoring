@@ -72,6 +72,38 @@ class RiskScorerTests(unittest.TestCase):
         update = self.scorer.add(self.event("injected_input"))
         self.assertEqual(update.weight, 15.0)
 
+    def test_peak_keeps_an_early_violation_after_long_decay(self) -> None:
+        self.scorer.add(self.event("phone_detected"))
+        self.clock.now = 5.0
+        self.scorer.add(self.event("phone_aimed_at_screen"))
+        self.clock.now = 30 * 60.0
+
+        self.assertEqual(self.scorer.current().total, 0.0)
+        self.assertEqual(self.scorer.peak().total, 84.0)
+        self.assertEqual(self.scorer.peak().level, "high")
+
+    def test_repeated_minor_signal_is_capped_below_red_zone(self) -> None:
+        updates = []
+        for second in range(5):
+            self.clock.now = float(second)
+            updates.append(self.scorer.add(self.event("hotkey_blocked")))
+
+        self.assertEqual([item.weight for item in updates], [15.0, 15.0, 0.0, 0.0, 0.0])
+        self.assertLessEqual(self.scorer.peak().total, 30.0)
+        self.assertNotEqual(self.scorer.peak().level, "high")
+
+    def test_strong_signal_is_not_capped(self) -> None:
+        for second in range(3):
+            self.clock.now = second * 20.0
+            self.scorer.add(self.event("phone_aimed_at_screen"))
+        self.assertEqual(self.scorer.peak().level, "high")
+
+    def test_custom_caps_can_disable_limits(self) -> None:
+        scorer = RiskScorer(clock=self.clock, caps={})
+        for _ in range(5):
+            scorer.add(self.event("hotkey_blocked"))
+        self.assertEqual(scorer.peak().total, 75.0)
+
 
 if __name__ == "__main__":
     unittest.main()

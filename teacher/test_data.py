@@ -65,13 +65,24 @@ class TeacherDataTests(unittest.TestCase):
 
     def test_recalculation_excludes_false_positive_and_its_combination(self) -> None:
         session = load_sessions(self.database)[0]
-        self.assertAlmostEqual(recalculate_risk(session), 39.0)
-        self.assertAlmostEqual(recalculate_risk(session, {self.phone_id}), 9.4)
-        self.assertAlmostEqual(recalculate_risk(session, {self.gaze_id}), 24.0)
+        # Пересчёт возвращает максимум за сессию, без убывания к её концу.
+        self.assertAlmostEqual(recalculate_risk(session), 39.6)
+        self.assertAlmostEqual(recalculate_risk(session, {self.phone_id}), 10.0)
+        self.assertAlmostEqual(recalculate_risk(session, {self.gaze_id}), 25.0)
         summary = summarize_events(session, {self.phone_id})
         self.assertEqual(summary["gaze_side"].count, 1)
         self.assertEqual(summary["gaze_side"].duration_seconds, 2.0)
         self.assertNotIn("phone_detected", summary)
+
+    def test_early_violation_stays_visible_after_a_long_quiet_test(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            with connection:
+                connection.execute(
+                    "UPDATE sessions SET ended_at=? WHERE id='session-1'",
+                    ((self.started + timedelta(minutes=40)).isoformat(),),
+                )
+        session = load_sessions(self.database)[0]
+        self.assertAlmostEqual(recalculate_risk(session), 39.6)
 
     def test_verdict_comment_and_flags_survive_reopening_without_changing_journal(self) -> None:
         reviews_path = self.root / "reviews.db"
@@ -97,7 +108,7 @@ class TeacherDataTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["студент"], "Аня")
-        self.assertEqual(rows[0]["риск"], "9.4")
+        self.assertEqual(rows[0]["риск"], "10.0")
         self.assertEqual(rows[0]["вердикт"], "не списывал")
         self.assertEqual(rows[0]["комментарий"], "Ошибочный телефон")
 

@@ -122,7 +122,12 @@ def load_sessions(database_path: Path) -> list[Session]:
 
 
 def recalculate_risk(session: Session, false_positive_ids: Iterable[str] = ()) -> float:
-    """Повторяет расчёт core.risk без событий, признанных ошибочными."""
+    """Повторяет расчёт core.risk без событий, признанных ошибочными.
+
+    Возвращает максимум за сессию, а не значение на момент окончания: живой
+    уровень постепенно убывает, и раннее нарушение иначе исчезло бы к концу
+    длинного теста.
+    """
     excluded = set(false_positive_ids)
     clock = [session.started_at.timestamp()]
     scorer = RiskScorer(clock=lambda: clock[0])
@@ -131,9 +136,7 @@ def recalculate_risk(session: Session, false_positive_ids: Iterable[str] = ()) -
             continue
         clock[0] = max(clock[0], stored.event.occurred_at.timestamp())
         scorer.add(stored.event)
-    end = session.ended_at or datetime.now(timezone.utc)
-    clock[0] = max(clock[0], end.timestamp())
-    return scorer.current().total
+    return scorer.peak().total
 
 
 def risk_zone(score: float) -> str:

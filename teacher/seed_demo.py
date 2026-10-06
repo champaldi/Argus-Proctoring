@@ -81,7 +81,7 @@ def seed_demo(database_path: Path, screenshots_dir: Path) -> None:
                     risk_total=update.total, frame=_placeholder(index, event_type),
                 )
             clock[0] = ended.timestamp()
-            final_risk = scorer.current().total
+            final_risk = scorer.peak().total
             store.finish_session(session_id, final_risk=final_risk)
             store.connection.execute(
                 """UPDATE sessions SET started_at=?, ended_at=?, status='completed',
