@@ -66,7 +66,9 @@ DEFAULT_SERVICE_NAMES = frozenset(
 class ProtectionConfig:
     poll_interval: float = 0.2
     process_interval: float = 2.0
-    max_seconds: float = 900.0
+    # Safety limit after which the hooks release themselves. It must exceed the
+    # longest real exam, otherwise protection silently ends mid-test.
+    max_seconds: float = 4 * 60 * 60.0
     injected_input_idle_seconds: float = 1.0
     blocked_process_names: frozenset[str] = DEFAULT_PROCESS_NAMES
     blocked_service_names: frozenset[str] = DEFAULT_SERVICE_NAMES

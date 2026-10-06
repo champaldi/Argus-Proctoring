@@ -14,6 +14,7 @@ from config import (
     RISK_DECAY_PER_SECOND,
     RISK_MAXIMUM,
     RISK_RED_ABOVE,
+    RISK_TYPE_CAPS,
     RISK_WEIGHTS,
     RISK_YELLOW_FROM,
 )
@@ -22,6 +23,9 @@ from events import EventType, ProctorEvent
 
 DEFAULT_WEIGHTS: Mapping[EventType, float] = {
     EventType(name): weight for name, weight in RISK_WEIGHTS.items()
+}
+DEFAULT_CAPS: Mapping[EventType, float] = {
+    EventType(name): cap for name, cap in RISK_TYPE_CAPS.items()
 }
 
 
@@ -44,6 +48,7 @@ class RiskScorer:
         self,
         weights: Mapping[EventType, float] | None = None,
         *,
+        caps: Mapping[EventType, float] | None = None,
         maximum: float = RISK_MAXIMUM,
         combination_window: float = RISK_COMBINATION_WINDOW_SECONDS,
         combination_multiplier: float = RISK_COMBINATION_MULTIPLIER,
@@ -51,12 +56,15 @@ class RiskScorer:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.weights = dict(weights or DEFAULT_WEIGHTS)
+        self.caps = dict(DEFAULT_CAPS if caps is None else caps)
         self.maximum = float(maximum)
         self.combination_window = float(combination_window)
         self.combination_multiplier = float(combination_multiplier)
         self.decay_per_second = float(decay_per_second)
         self._clock = clock
         self._total = 0.0
+        self._peak = 0.0
+        self._contributed: dict[EventType, float] = {}
         self._last_update = float(clock())
         self._recent: deque[tuple[float, EventType]] = deque()
         self._lock = threading.RLock()
@@ -88,7 +96,13 @@ class RiskScorer:
             combined = any(event_type != event.type for _, event_type in self._recent)
             multiplier = self.combination_multiplier if combined else 1.0
             weight = self.weights.get(event.type, 0.0) * multiplier
+            cap = self.caps.get(event.type)
+            if cap is not None:
+                used = self._contributed.get(event.type, 0.0)
+                weight = max(0.0, min(weight, cap - used))
+            self._contributed[event.type] = self._contributed.get(event.type, 0.0) + weight
             self._total = min(self.maximum, self._total + weight)
+            self._peak = max(self._peak, self._total)
             self._recent.append((now, event.type))
             total = round(self._total, 2)
             return RiskUpdate(
@@ -104,4 +118,15 @@ class RiskScorer:
             self._apply_decay(now)
             self._prune_recent(now)
             total = round(self._total, 2)
+            return RiskSnapshot(total=total, level=self._level(total))
+
+    def peak(self) -> RiskSnapshot:
+        """Highest level reached in the session.
+
+        The live value decays while nothing happens, so it is only suitable for
+        the on-screen indicator. A verdict must rely on the peak: otherwise an
+        early violation disappears by the end of a long test.
+        """
+        with self._lock:
+            total = round(self._peak, 2)
             return RiskSnapshot(total=total, level=self._level(total))

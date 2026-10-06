@@ -617,7 +617,7 @@ class MainWindow(QMainWindow):
         self.next_button.setEnabled(False)
         self.progress_label.setText("Тест завершён · контроль выключен")
         self.shutdown()
-        final_risk = self.pipeline.current_risk().total
+        final_risk = self.pipeline.peak_risk().total
         try:
             events = load_session_events(
                 self.config.database_path,

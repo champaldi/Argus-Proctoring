@@ -110,6 +110,10 @@ class EventPipeline:
     def current_risk(self) -> RiskSnapshot:
         return self._scorer.current()
 
+    def peak_risk(self) -> RiskSnapshot:
+        """Highest risk reached in this session; this is what gets stored."""
+        return self._scorer.peak()
+
     def stop(self, timeout: float = 5.0) -> None:
         if self._thread is None:
             return
@@ -162,7 +166,7 @@ class EventPipeline:
         finally:
             store.finish_session(
                 self.session_id,
-                final_risk=self._scorer.current().total,
+                final_risk=self._scorer.peak().total,
             )
             store.close()
 
