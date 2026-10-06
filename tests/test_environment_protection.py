@@ -281,6 +281,19 @@ class ProtectionTests(unittest.TestCase):
         self.protection.disable()
         self.assertIsNone(self.desktop.hook)
 
+    def test_capture_protection_can_be_switched_off_for_demo_recording(self):
+        from environment_protection.controller import Protection, ProtectionConfig
+
+        protection = Protection(self.desktop, ProtectionConfig(protect_capture=False))
+        protection.enable(self.events.append)
+        try:
+            self.assertFalse(protection.status()["capture_protected"])
+            self.assertEqual(self.desktop.capture_calls, [])
+            self.assertEqual(self.events, [])
+        finally:
+            protection.disable()
+        self.assertEqual(self.desktop.capture_calls, [])
+
     def test_capture_protection_failure_is_reported_without_locking_desktop(self):
         self.desktop.capture_succeeds = False
         self.start()

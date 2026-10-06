@@ -75,6 +75,8 @@ class ProtectionConfig:
     max_seconds: float = 4 * 60 * 60.0
     injected_input_idle_seconds: float = 1.0
     # Keep the test window maximized and above every other window.
+    # Hide the test window from screen capture. Turn off only to record a demo.
+    protect_capture: bool = True
     lock_window: bool = True
     # Empty the clipboard when the test starts and ends, so text can neither be
     # brought into the test nor carried out of it.
@@ -171,9 +173,10 @@ class Protection:
             session = _Session(target, pid, callback, time.monotonic() + self.config.max_seconds)
             self._session = session
             try:
-                session.capture_protected = self.backend.protect_capture(target)
-                if not session.capture_protected:
-                    self._emit(session, "capture_protection_failed", target_hwnd=target)
+                if self.config.protect_capture:
+                    session.capture_protected = self.backend.protect_capture(target)
+                    if not session.capture_protected:
+                        self._emit(session, "capture_protection_failed", target_hwnd=target)
                 if self.config.clear_clipboard:
                     self._clear_clipboard()
                     session.clipboard_pending = True
