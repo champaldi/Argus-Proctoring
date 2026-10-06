@@ -56,8 +56,11 @@ class EventPipeline:
         cooldowns: dict[EventType, float] | None = None,
         scorer: RiskScorer | None = None,
         queue_size: int = 256,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = uuid4().hex
+        # Stored with the session, e.g. the student name for the teacher panel.
+        self.metadata: dict[str, Any] = {"application": "proctoring", **(metadata or {})}
         self.database_path = database_path
         self.screenshots_dir = screenshots_dir
         self.on_recorded = on_recorded
@@ -146,7 +149,7 @@ class EventPipeline:
         store: EventStore | None = None
         try:
             store = EventStore(self.database_path, self.screenshots_dir)
-            store.start_session(self.session_id, {"application": "proctoring"})
+            store.start_session(self.session_id, dict(self.metadata))
         except Exception as exc:
             self._startup_error = exc
             self._ready.set()
