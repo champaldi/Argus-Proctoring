@@ -28,6 +28,7 @@ class EventType(str, Enum):
     CAPTURE_PROTECTION_FAILED = "capture_protection_failed"
     REMOTE_SESSION = "remote_session"
     MULTIPLE_MONITORS = "multiple_monitors"
+    INJECTED_INPUT = "injected_input"
 
 
 def utc_now() -> datetime:

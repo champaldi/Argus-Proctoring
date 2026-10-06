@@ -57,6 +57,10 @@ class EventContractTests(unittest.TestCase):
         event = ProctorEvent.create("multiple_monitors", source="security")
         self.assertEqual(event.type, EventType.MULTIPLE_MONITORS)
 
+    def test_injected_input_uses_shared_contract(self) -> None:
+        event = ProctorEvent.create("injected_input", source="security")
+        self.assertEqual(event.type, EventType.INJECTED_INPUT)
+
 
 if __name__ == "__main__":
     unittest.main()

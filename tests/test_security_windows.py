@@ -130,3 +130,59 @@ class WindowsBackendTests(unittest.TestCase):
 
         self.assertEqual(self.backend.monitor_count(), 2)
         self.backend.user32.GetSystemMetrics.assert_called_once_with(80)
+
+    def test_injected_keyboard_flags_and_actions_are_decoded(self):
+        from environment_protection.windows import decode_keyboard_input
+
+        self.assertEqual(
+            decode_keyboard_input(0x0100, 65, 30, 0x12),
+            {
+                "device": "keyboard",
+                "action": "key_down",
+                "injected": True,
+                "lower_integrity": True,
+                "vk_code": 65,
+                "scan_code": 30,
+            },
+        )
+        self.assertIsNone(decode_keyboard_input(0x0101, 65, 30, 0x00))
+
+    def test_injected_mouse_flags_and_actions_are_decoded(self):
+        from environment_protection.windows import decode_mouse_input
+
+        self.assertEqual(
+            decode_mouse_input(0x0200, 120, 80, 0, 0x03),
+            {
+                "device": "mouse",
+                "action": "move",
+                "injected": True,
+                "lower_integrity": True,
+                "x": 120,
+                "y": 80,
+                "mouse_data": 0,
+            },
+        )
+        self.assertIsNone(decode_mouse_input(0x0201, 120, 80, 0, 0x00))
+
+    def test_input_monitor_is_started_and_its_cleanup_is_returned(self):
+        monitor = Mock()
+        self.backend.input_monitor_factory = Mock(return_value=monitor)
+        callback = Mock()
+
+        remove = self.backend.install_input_monitor(callback)
+        remove()
+
+        self.backend.input_monitor_factory.assert_called_once_with(
+            self.backend.user32,
+            self.backend.kernel32,
+            callback,
+        )
+        monitor.start.assert_called_once_with()
+        monitor.stop.assert_called_once_with()
+
+    def test_real_low_level_input_monitor_starts_and_stops_without_blocking(self):
+        remove = self.backend.install_input_monitor(lambda details: None)
+        try:
+            self.assertTrue(callable(remove))
+        finally:
+            remove()

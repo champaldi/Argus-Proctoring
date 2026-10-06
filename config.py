@@ -25,6 +25,7 @@ RISK_WEIGHTS: dict[str, float] = {
     "capture_protection_failed": 15.0,
     "remote_session": 30.0,
     "multiple_monitors": 20.0,
+    "injected_input": 15.0,
 }
 RISK_COMBINATION_WINDOW_SECONDS = 10.0
 RISK_COMBINATION_MULTIPLIER = 1.5

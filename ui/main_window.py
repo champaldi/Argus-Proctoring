@@ -53,6 +53,7 @@ EVENT_LABELS = {
     "capture_protection_failed": "Не удалось скрыть окно от захвата",
     "remote_session": "Тест запущен через удалённую сессию",
     "multiple_monitors": "Подключено несколько мониторов",
+    "injected_input": "Обнаружен программно внедрённый ввод",
 }
 
 

@@ -19,6 +19,7 @@ class FakeDesktop:
         self.restore_succeeds = True
         self.restores = []
         self.hook = None
+        self.input_monitor = None
         self.process_list = []
         self.service_list = []
         self.fail_install = False
@@ -54,6 +55,13 @@ class FakeDesktop:
             raise RuntimeError("hook installation failed")
         self.hook = callback
         return self.remove_hook
+
+    def install_input_monitor(self, callback):
+        self.input_monitor = callback
+        return self.remove_input_monitor
+
+    def remove_input_monitor(self):
+        self.input_monitor = None
 
     def remove_hook(self):
         if self.fail_remove:
@@ -101,7 +109,12 @@ class ProtectionTests(unittest.TestCase):
         self.events = []
         self.protection = Protection(
             self.desktop,
-            ProtectionConfig(poll_interval=0.01, process_interval=0.02, max_seconds=5),
+            ProtectionConfig(
+                poll_interval=0.01,
+                process_interval=0.02,
+                max_seconds=5,
+                injected_input_idle_seconds=0.04,
+            ),
         )
         self.addCleanup(self.protection.disable)
 
@@ -205,6 +218,44 @@ class ProtectionTests(unittest.TestCase):
         self.desktop.monitor_count_value = 3
         self.assertTrue(wait_for(lambda: len(self.events) == 2))
         self.assertEqual(self.events[1]["details"], {"monitor_count": 3})
+
+    def test_injected_mouse_and_keyboard_input_emit_episodes_but_physical_input_does_not(self):
+        self.start()
+        monitor = self.desktop.input_monitor
+        monitor({"device": "mouse", "action": "move", "injected": False})
+        time.sleep(0.02)
+        self.assertEqual(self.events, [])
+
+        first = {
+            "device": "mouse",
+            "action": "move",
+            "injected": True,
+            "lower_integrity": False,
+        }
+        monitor(first)
+        monitor({**first, "action": "left_down"})
+        self.assertTrue(wait_for(lambda: len(self.events) == 1))
+        self.assertEqual(self.events[0]["type"], "injected_input")
+        self.assertEqual(self.events[0]["details"], first)
+
+        time.sleep(0.06)
+        keyboard = {
+            "device": "keyboard",
+            "action": "key_down",
+            "injected": True,
+            "lower_integrity": True,
+            "vk_code": 65,
+            "scan_code": 30,
+        }
+        monitor(keyboard)
+        self.assertTrue(wait_for(lambda: len(self.events) == 2))
+        self.assertEqual(self.events[1]["details"], keyboard)
+
+    def test_disable_removes_injected_input_monitor(self):
+        self.start()
+        self.assertIsNotNone(self.desktop.input_monitor)
+        self.protection.disable()
+        self.assertIsNone(self.desktop.input_monitor)
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()

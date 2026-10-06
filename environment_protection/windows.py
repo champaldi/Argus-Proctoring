@@ -6,6 +6,8 @@ import os
 import sys
 from ctypes import WinDLL, wintypes
 
+from .input_hooks import LowLevelInputMonitor, decode_keyboard_input, decode_mouse_input
+
 
 WDA_NONE = 0x00
 WDA_EXCLUDEFROMCAPTURE = 0x11
@@ -31,6 +33,8 @@ class WindowsBackend:
         self.gui = win32gui
         self.process = win32process
         self.user32 = WinDLL("user32", use_last_error=True)
+        self.kernel32 = WinDLL("kernel32", use_last_error=True)
+        self.input_monitor_factory = LowLevelInputMonitor
 
     def resolve_target(self, hwnd):
         if hwnd is None:
@@ -90,6 +94,11 @@ class WindowsBackend:
 
     def install_hook(self, callback):
         return self.keyboard.hook(callback, suppress=True)
+
+    def install_input_monitor(self, callback):
+        monitor = self.input_monitor_factory(self.user32, self.kernel32, callback)
+        monitor.start()
+        return monitor.stop
 
     def target_exists(self, hwnd, pid):
         return (

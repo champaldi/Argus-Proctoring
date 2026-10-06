@@ -68,6 +68,10 @@ class RiskScorerTests(unittest.TestCase):
         update = self.scorer.add(self.event("multiple_monitors"))
         self.assertEqual(update.weight, 20.0)
 
+    def test_injected_input_has_security_weight(self) -> None:
+        update = self.scorer.add(self.event("injected_input"))
+        self.assertEqual(update.weight, 15.0)
+
 
 if __name__ == "__main__":
     unittest.main()

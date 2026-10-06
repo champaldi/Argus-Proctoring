@@ -67,11 +67,17 @@ class ProtectionConfig:
     poll_interval: float = 0.2
     process_interval: float = 2.0
     max_seconds: float = 900.0
+    injected_input_idle_seconds: float = 1.0
     blocked_process_names: frozenset[str] = DEFAULT_PROCESS_NAMES
     blocked_service_names: frozenset[str] = DEFAULT_SERVICE_NAMES
 
     def __post_init__(self):
-        for name in ("poll_interval", "process_interval", "max_seconds"):
+        for name in (
+            "poll_interval",
+            "process_interval",
+            "max_seconds",
+            "injected_input_idle_seconds",
+        ):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -102,6 +108,8 @@ class _Session:
     monitor_count: int | None = None
     multiple_monitors_active: bool = False
     remove_hook: Callable | None = None
+    remove_input_hook: Callable | None = None
+    last_injected_input: float | None = None
     capture_protected: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     threads: list[threading.Thread] = field(default_factory=list)
@@ -155,6 +163,9 @@ class Protection:
                 }
                 session.remove_hook = self.backend.install_hook(
                     lambda event: self._handle_key(session, event)
+                )
+                session.remove_input_hook = self.backend.install_input_monitor(
+                    lambda details: self._handle_injected_input(session, details)
                 )
                 workers = [
                     ("security-watchdog", self._watchdog),
@@ -213,6 +224,13 @@ class Protection:
 
     def _cleanup(self, session: _Session):
         with session.cleanup_lock:
+            if session.remove_input_hook is not None:
+                try:
+                    session.remove_input_hook()
+                except Exception as exc:
+                    session.error = f"{type(exc).__name__}: {exc}"
+                else:
+                    session.remove_input_hook = None
             if session.capture_protected:
                 try:
                     released = self.backend.release_capture(session.hwnd)
@@ -301,6 +319,21 @@ class Protection:
         except Exception as exc:
             session.stop("keyboard_error", exc)
             return True
+
+    def _handle_injected_input(self, session: _Session, details: dict[str, Any]) -> None:
+        if session.stopped.is_set() or not details.get("injected"):
+            return
+        try:
+            now = time.monotonic()
+            previous = session.last_injected_input
+            session.last_injected_input = now
+            if (
+                previous is None
+                or now - previous > self.config.injected_input_idle_seconds
+            ):
+                self._emit(session, "injected_input", **details)
+        except Exception as exc:
+            session.stop("input_monitor_error", exc)
 
     def _watchdog(self, session: _Session):
         if not session.stopped.wait(max(0, session.deadline - time.monotonic())):
