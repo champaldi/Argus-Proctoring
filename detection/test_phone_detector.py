@@ -384,6 +384,24 @@ class InstantPhoneTests(unittest.TestCase):
         actual = self.run_frames([[box(0), box(67, 60, 0.74)]] * 3, range(3))
         self.assertEqual(actual, [[], [], ["phone_detected"]])
 
+    def run_scored(self, confidence, verifier_score):
+        """One frame whose phone carries a score from the second model."""
+        phone = phone_module.Detection(67, confidence, (10, 60, 30, 80), verifier_score)
+        person = phone_module.Detection(0, 0.9, (10, 10, 30, 30))
+        analysis = phone_module.FrameAnalysis([person, phone], [])
+        detector = PhoneDetector(model=FakeModel([]))
+        with patch.object(phone_module, "analyze_frame", return_value=analysis):
+            return [event.type.value for event in detector.detect(FRAME, timestamp=0)]
+
+    def test_both_models_agreeing_is_instant_at_lower_confidence(self):
+        self.assertEqual(self.run_scored(0.67, 0.99), ["phone_detected"])
+        self.assertEqual(self.run_scored(0.45, 0.90), ["phone_detected"])
+
+    def test_weak_agreement_still_waits(self):
+        self.assertEqual(self.run_scored(0.67, 0.5), [])
+        self.assertEqual(self.run_scored(0.40, 0.99), [])
+        self.assertEqual(self.run_scored(0.67, None), [])
+
     def test_threshold_itself_is_instant(self):
         actual = self.run_frames([[box(0), box(67, 60, 0.75)]], [0])
         self.assertEqual(actual, [["phone_detected"]])

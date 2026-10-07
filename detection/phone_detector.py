@@ -36,6 +36,11 @@ PHONE_MIN_HITS = 3
 # Уверенный телефон, прошедший все фильтры, фиксируется с первого же кадра:
 # ждать три наблюдения нужно только для сомнительных рамок.
 PHONE_INSTANT_CONFIDENCE = 0.75
+# Телефон у края кадра или в тёмном чехле YOLO оценивает ниже (измерено: 67 %),
+# но CLIP на настоящих телефонах даёт 0,97-1,00. Согласие двух моделей тоже
+# фиксируется с первого кадра.
+PHONE_INSTANT_VERIFIED_CONFIDENCE = 0.45
+PHONE_INSTANT_VERIFIER_SCORE = 0.9
 # Уверенно найденный телефон считается убранным после стольких прогонов
 # подряд без него; следующее появление записывается новым событием.
 PHONE_GONE_RUNS = 2
@@ -369,7 +374,14 @@ class PhoneDetector:
         hits = sum(self.phone_hits)
         best = max(phones, key=lambda item: item.confidence) if phones else None
         self.phone_missing_runs = 0 if phones else self.phone_missing_runs + 1
-        if best is not None and best.confidence >= PHONE_INSTANT_CONFIDENCE:
+        if best is not None and (
+            best.confidence >= PHONE_INSTANT_CONFIDENCE
+            or (
+                best.verifier_score is not None
+                and best.verifier_score >= PHONE_INSTANT_VERIFIER_SCORE
+                and best.confidence >= PHONE_INSTANT_VERIFIED_CONFIDENCE
+            )
+        ):
             self.instant_episode = True
         elif self.instant_episode and self.phone_missing_runs >= PHONE_GONE_RUNS:
             # Иначе старые наблюдения в окне держали бы эпизод ещё полторы
