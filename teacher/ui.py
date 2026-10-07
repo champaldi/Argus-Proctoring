@@ -46,13 +46,24 @@ from .data import (
     risk_zone,
     summarize_events,
 )
-from ui.theme import window_title
+from ui.theme import (
+    CRITICAL,
+    CRITICAL_TEXT,
+    MUTED,
+    SAFE,
+    SAFE_TEXT,
+    TEACHER_STYLE,
+    WARNING,
+    WARNING_TEXT,
+    window_title,
+)
 
 from .conclusion import build_conclusion
 from .report import default_report_name, write_session_report
 
 
-ZONE_COLORS = {"low": "#55d6a9", "medium": "#f0c45d", "high": "#ef6262"}
+# Text shades of the palette's status colours: readable on the light page.
+ZONE_COLORS = {"low": SAFE_TEXT, "medium": WARNING_TEXT, "high": CRITICAL_TEXT}
 ZONE_LABELS = {"low": "зелёная", "medium": "жёлтая", "high": "красная"}
 MOMENT_LABELS = {
     "phone_detected": "Телефон",
@@ -116,7 +127,7 @@ class Timeline(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         left, right = 38, max(39, self.width() - 38)
         center = 48
-        painter.setPen(QPen(QColor("#44516b"), 3))
+        painter.setPen(QPen(QColor("#D1D5DB"), 3))
         painter.drawLine(left, center, right, center)
         started = self.session.started_at.timestamp()
         ended = (self.session.ended_at or datetime.now().astimezone()).timestamp()
@@ -125,14 +136,14 @@ class Timeline(QWidget):
             fraction = min(1.0, max(0.0, (stored.event.occurred_at.timestamp() - started) / span))
             x = left + round((right - left) * fraction)
             y = center + (-14 if index % 2 else 14)
-            color = ("#70809e" if stored.event.event_id in self.excluded else
-                     "#ef6262" if stored.weight >= 30 else
-                     "#f0c45d" if stored.weight >= 15 else "#55d6a9")
+            color = ("#9CA3AF" if stored.event.event_id in self.excluded else
+                     CRITICAL if stored.weight >= 30 else
+                     WARNING if stored.weight >= 15 else SAFE)
             painter.setPen(QPen(QColor(color), 2))
             painter.drawLine(x, center, x, y)
             painter.setBrush(QColor(color))
             painter.drawEllipse(x - 5, y - 5, 10, 10)
-        painter.setPen(QColor("#8f9cb5"))
+        painter.setPen(QColor(MUTED))
         painter.drawText(left, 89, self.session.started_at.astimezone().strftime("%H:%M"))
         if self.session.ended_at:
             label = self.session.ended_at.astimezone().strftime("%H:%M")
@@ -180,27 +191,7 @@ class TeacherWindow(QMainWindow):
         self.setWindowTitle(window_title("Панель преподавателя"))
         self.resize(1320, 830)
         self.setMinimumSize(980, 650)
-        self.setStyleSheet("""
-            QMainWindow, QWidget { background: #0b1020; color: #e8edf7; }
-            QLabel { background: transparent; }
-            QFrame#card { background: #121a2d; border: 1px solid #26334f;
-                          border-radius: 14px; }
-            QLabel#eyebrow { color: #8d9bb8; font-size: 11px; font-weight: 700; }
-            QLabel#heading { font-size: 27px; font-weight: 700; }
-            QLabel#section { font-size: 17px; font-weight: 700; }
-            QPushButton, QToolButton { background: #5d7df6; color: white; border: 0;
-                         border-radius: 9px; padding: 9px 15px; font-weight: 700; }
-            QPushButton:hover, QToolButton:hover { background: #7290ff; }
-            QPushButton#secondary { background: #202d49; }
-            QTableWidget, QTextEdit { background: #121a2d; border: 1px solid #26334f;
-                                      border-radius: 10px; gridline-color: #26334f;
-                                      selection-background-color: #294475; }
-            QHeaderView::section { background: #202d49; color: #b9c4da;
-                                   border: 0; padding: 9px; font-weight: 700; }
-            QTableWidget::item { padding: 6px; }
-            QCheckBox { spacing: 8px; }
-            QScrollArea { border: 0; }
-        """)
+        self.setStyleSheet(TEACHER_STYLE)
         self.pages = QStackedWidget()
         self.setCentralWidget(self.pages)
         self.sessions_page = self._build_sessions_page()
@@ -536,9 +527,9 @@ class TeacherWindow(QMainWindow):
             if not pixmap.isNull():
                 return pixmap
         pixmap = QPixmap(640, 360)
-        pixmap.fill(QColor("#18243b"))
+        pixmap.fill(QColor("#E5E7EB"))
         painter = QPainter(pixmap)
-        painter.setPen(QColor("#91a2bf"))
+        painter.setPen(QColor(MUTED))
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "Нет кадра")
         painter.end()
         return pixmap

@@ -87,6 +87,31 @@ QCheckBox {{ font-size: 14px; }}
 {_BUTTONS}
 """
 
+TEACHER_STYLE = f"""
+QMainWindow, QWidget {{ background: {PAGE}; color: {TEXT}; font-family: {FONT}; }}
+QLabel {{ background: transparent; }}
+QMessageBox {{ background: {PAGE}; }}
+QFrame#card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 14px; }}
+QLabel#eyebrow {{ color: {ACCENT}; font-size: 11px; font-weight: 700; }}
+QLabel#heading {{ color: {HEADING}; font-size: 27px; font-weight: 700; }}
+QLabel#section {{ color: {HEADING}; font-size: 17px; font-weight: 700; }}
+QPushButton, QToolButton {{ background: {ACCENT}; color: white; border: 0;
+                            border-radius: 9px; padding: 9px 15px; font-weight: 600; }}
+QPushButton:hover, QToolButton:hover {{ background: {ACCENT_DARK}; }}
+QPushButton:disabled, QToolButton:disabled {{ background: #D1D5DB; color: #6B7280; }}
+QPushButton#secondary {{ background: #E5E7EB; color: {HEADING}; }}
+QPushButton#secondary:hover {{ background: #D1D5DB; }}
+QTableWidget, QTextEdit {{ background: {CARD}; color: {TEXT}; border: 1px solid {BORDER};
+                           border-radius: 10px; gridline-color: {BORDER};
+                           selection-background-color: #DBEAFE;
+                           selection-color: {HEADING}; }}
+QHeaderView::section {{ background: #F3F4F6; color: #4B5563; border: 0; padding: 9px;
+                        font-weight: 700; }}
+QTableWidget::item {{ padding: 6px; }}
+QCheckBox {{ spacing: 8px; }}
+QScrollArea {{ border: 0; }}
+"""
+
 MONITOR_NOTE_STYLE = f"color: {MUTED}; font-size: 13px;"
 STATUS_OK_COLOR = SAFE_TEXT
 STATUS_WARNING_COLOR = WARNING_TEXT

@@ -15,6 +15,8 @@ from pathlib import Path
 from core.event_presentation import EVENT_LABELS, application_details
 from core.storage import StoredEvent
 
+from ui.theme import APP_NAME
+
 from .conclusion import build_conclusion
 from .data import (
     Review,
@@ -33,17 +35,19 @@ ZONE_TITLES = {"low": "Зелёная зона", "medium": "Жёлтая зон�
 KEY_MOMENTS = 5
 
 STYLE = """
-:root { --ink:#16202e; --muted:#5d6b7e; --line:#dfe4ec; --paper:#ffffff; --wash:#f4f6fa;
-        --low:#1f8a5b; --medium:#a8730a; --high:#b93a3a;
-        --low-bg:#e3f4ec; --medium-bg:#fbf0d6; --high-bg:#fbe3e3; }
+:root { --ink:#1F2937; --text:#374151; --muted:#6B7280; --line:#E5E7EB; --paper:#FFFFFF;
+        --wash:#F8F9FA; --brand:#1E3A8A;
+        --low:#047857; --medium:#B45309; --high:#B91C1C;
+        --low-bg:#D1FAE5; --medium-bg:#FEF3C7; --high-bg:#FEE2E2; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--wash); color:var(--ink);
-       font:15px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; }
+body { margin:0; background:var(--wash); color:var(--text);
+       font:15px/1.5 Inter, "Segoe UI", system-ui, -apple-system, Arial, sans-serif; }
+h1, h2, b, strong, th { color:var(--ink); }
 main { max-width:960px; margin:0 auto; padding:32px 20px 48px; }
 h1 { font-size:26px; line-height:1.2; margin:0 0 4px; }
 h2 { font-size:16px; margin:0 0 12px; }
 p { margin:0 0 8px; }
-.eyebrow { color:var(--muted); font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+.eyebrow { color:var(--brand); font-weight:700; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
 .muted { color:var(--muted); }
 section { background:var(--paper); border:1px solid var(--line); border-radius:12px;
           padding:20px 22px; margin-top:16px; }
@@ -129,13 +133,13 @@ def _weight_class(weight: float) -> str:
 
 def _timeline_svg(session: Session, excluded: set[str]) -> str:
     total = max(session.duration_seconds, 1.0)
-    colors = {"low": "#1f8a5b", "medium": "#c98a12", "high": "#b93a3a"}
+    colors = {"low": "#10B981", "medium": "#F59E0B", "high": "#EF4444"}
     marks = []
     for stored in session.events:
         offset = (stored.event.occurred_at - session.started_at).total_seconds()
         x = 20 + 920 * min(1.0, max(0.0, offset / total))
         dismissed = stored.event.event_id in excluded
-        color = "#a7b0bd" if dismissed else colors[_weight_class(stored.weight)]
+        color = "#9CA3AF" if dismissed else colors[_weight_class(stored.weight)]
         title = escape(f"{_offset_text(session, stored)} · {_event_title(stored)}")
         marks.append(
             f'<g><title>{title}</title>'
@@ -145,7 +149,7 @@ def _timeline_svg(session: Session, excluded: set[str]) -> str:
     return (
         '<svg class="timeline" viewBox="0 0 960 44" preserveAspectRatio="none" role="img" '
         'aria-label="Таймлайн событий сессии">'
-        '<line x1="20" y1="36" x2="940" y2="36" stroke="#c9d0db" stroke-width="2"/>'
+        '<line x1="20" y1="36" x2="940" y2="36" stroke="#D1D5DB" stroke-width="2"/>'
         + "".join(marks)
         + "</svg>"
         # Подписи вынесены в HTML: растянутый по ширине SVG исказил бы текст.
@@ -276,7 +280,7 @@ def render_session_report(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Отчёт прокторинга — {escape(session.student_name)}</title>
+<title>{APP_NAME} · отчёт прокторинга — {escape(session.student_name)}</title>
 <style>{STYLE}</style>
 </head>
 <body>
@@ -284,7 +288,7 @@ def render_session_report(
 <section>
   <div class="head">
     <div class="who">
-      <div class="eyebrow">Отчёт прокторинга</div>
+      <div class="eyebrow">{APP_NAME} · отчёт прокторинга</div>
       <h1>{escape(session.student_name)}</h1>
       <div class="facts">
         <div><span>Начало</span>{started}</div>
@@ -311,10 +315,10 @@ def render_session_report(
 <section>
   <h2>Таймлайн</h2>
   {_timeline_svg(session, excluded)}
-  <div class="legend"><span><i style="background:#1f8a5b"></i>низкий вклад</span>
-    <span><i style="background:#c98a12"></i>средний</span>
-    <span><i style="background:#b93a3a"></i>высокий</span>
-    <span><i style="background:#a7b0bd"></i>снято преподавателем</span></div>
+  <div class="legend"><span><i style="background:#10B981"></i>низкий вклад</span>
+    <span><i style="background:#F59E0B"></i>средний</span>
+    <span><i style="background:#EF4444"></i>высокий</span>
+    <span><i style="background:#9CA3AF"></i>снято преподавателем</span></div>
 </section>
 <section>
   <h2>Ключевые моменты</h2>
