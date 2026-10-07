@@ -19,6 +19,7 @@ import numpy as np
 from .analyzer import (
     CALIBRATION_MAX_SECONDS,
     CALIBRATION_MIN_SECONDS,
+    DEFAULT_AUTO_BASELINE_SECONDS,
     DEFAULT_DOWN_BUDGET_SECONDS,
     DEFAULT_GAZE_GAP_SECONDS,
     DEFAULT_MIN_EXTRA_FACE_RATIO,
@@ -216,6 +217,16 @@ def format_diagnostics_lines(
         f"screen={_diagnostic_number(screen_iris, digits=2)} "
         f"dy={_diagnostic_number(iris_delta, signed=True, digits=2)}",
     ]
+    eye_open = diagnostics.get("eye_open")
+    base_open = (screen or {}).get("eye_open")
+    share = (
+        f"{eye_open / base_open:.0%}" if eye_open is not None and base_open else "?"
+    )
+    lines.append(
+        f"Eyes open: now={_diagnostic_number(eye_open, digits=2)} "
+        f"base={_diagnostic_number(base_open, digits=2)} ({share}) "
+        f"| baseline={str(diagnostics.get('baseline_source', '?')).upper()}"
+    )
     if keyboard is None:
         lines.append("Keyboard: NOT SET")
     else:
@@ -252,6 +263,12 @@ def format_diagnostics_lines(
         f"Down: dp>={head_threshold:.1f} OR dy>={iris_threshold:.2f} "
         f"OR (dp>={combined_threshold:.1f} AND dy>={combined_iris_threshold:.2f})"
     )
+    if base_open:
+        lines.append(
+            f"Down: OR dp>={config.relative_head_down_degrees:.0f} "
+            f"OR (dp>={config.eyelid_down_degrees:.0f} "
+            f"AND eyes<={config.eyelid_down_open_ratio:.0%})"
+        )
     if calibrating:
         lines.append("COLLECTING PROFILE: gaze_down/gaze_side events are hidden")
     return lines
@@ -437,6 +454,7 @@ def run(args: argparse.Namespace) -> int:
                 gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
                 min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
                 down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
+                auto_baseline_seconds=DEFAULT_AUTO_BASELINE_SECONDS,
             )
         )
         profile_loaded = args.profile is not None and load_profile(analyzer, args.profile)

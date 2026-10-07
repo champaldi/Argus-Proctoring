@@ -211,6 +211,7 @@ class ConvenienceAnalyzerTests(unittest.TestCase):
                 "gaze_gap_seconds": DEFAULT_GAZE_GAP_SECONDS,
                 "min_extra_face_ratio": DEFAULT_MIN_EXTRA_FACE_RATIO,
                 "down_budget_seconds": gaze_analyzer.DEFAULT_DOWN_BUDGET_SECONDS,
+                "auto_baseline_seconds": gaze_analyzer.DEFAULT_AUTO_BASELINE_SECONDS,
             },
         )
 
