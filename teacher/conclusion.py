@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .data import Session, recalculate_risk, risk_zone
+from .rules import VIOLATION, classify, evaluate_rules
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +19,16 @@ class Conclusion:
     headline: str
     reasons: tuple[str, ...]
     recommendation: str
+    # Сработавшие правила корреляции и итог: violation, suspicious или clean.
+    findings: tuple[str, ...] = ()
+    classification: str = "clean"
 
     def as_text(self) -> str:
         lines = [self.headline]
+        if self.findings:
+            lines.append("Сработавшие правила:")
+            lines.extend(f"• {finding}" for finding in self.findings)
+            lines.append("События:")
         lines.extend(f"• {reason}" for reason in self.reasons)
         lines.append(self.recommendation)
         return "\n".join(lines)
@@ -31,6 +39,10 @@ HEADLINES = {
     "medium": "Есть отдельные подозрительные моменты.",
     "high": "Высокий риск нарушения.",
 }
+VIOLATION_HEADLINE = "Есть признаки нарушения: сработало правило корреляции."
+VIOLATION_RECOMMENDATION = (
+    "Рекомендуется проверка преподавателем: начните с кадров сработавшего правила."
+)
 RECOMMENDATIONS = {
     "low": "Проверка кадров не обязательна.",
     "medium": "Рекомендуется просмотреть отмеченные кадры.",
@@ -124,5 +136,16 @@ def build_conclusion(
             else "После снятия ошибочных событий нарушений не осталось."
         )
         return Conclusion(zone, headline, (), RECOMMENDATIONS["low"])
-    wording = "medium" if zone == "low" and STRONG_SIGNALS & grouped.keys() else zone
-    return Conclusion(zone, HEADLINES[wording], tuple(reasons), RECOMMENDATIONS[wording])
+    found = evaluate_rules(session, excluded)
+    findings = tuple(finding.as_text(session) for finding in found)
+    classification = classify(found)
+    if classification == VIOLATION:
+        return Conclusion(
+            zone, VIOLATION_HEADLINE, tuple(reasons), VIOLATION_RECOMMENDATION,
+            findings, classification,
+        )
+    wording = "medium" if zone == "low" and (STRONG_SIGNALS & grouped.keys() or found) else zone
+    return Conclusion(
+        zone, HEADLINES[wording], tuple(reasons), RECOMMENDATIONS[wording],
+        findings, classification,
+    )

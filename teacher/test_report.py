@@ -105,7 +105,8 @@ class ConclusionTests(ReportFixture):
     def test_high_risk_conclusion_names_strongest_reasons_first(self) -> None:
         conclusion = build_conclusion(self.session)
         self.assertEqual(conclusion.zone, "high")
-        self.assertIn("Высокий риск", conclusion.headline)
+        self.assertIn("признаки нарушения", conclusion.headline)
+        self.assertEqual(conclusion.classification, "violation")
         self.assertTrue(conclusion.reasons[0].startswith("телефон наведён на экран — 1 раз"))
         self.assertIn("на 3-й минуте", conclusion.reasons[0])
         self.assertIn("проверка преподавателем", conclusion.recommendation)

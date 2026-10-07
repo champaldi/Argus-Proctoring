@@ -192,6 +192,12 @@ def render_session_report(
 
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in conclusion.reasons)
     reasons_html = f"<ul>{reasons}</ul>" if reasons else ""
+    findings = "".join(f"<li>{escape(finding)}</li>" for finding in conclusion.findings)
+    findings_html = (
+        f"<p><b>Сработавшие правила</b></p><ul>{findings}</ul><p><b>События</b></p>"
+        if findings
+        else ""
+    )
 
     summary = summarize_events(session, excluded)
     summary_rows = []
@@ -296,6 +302,7 @@ def render_session_report(
   <div class="risk"><strong>{score:.0f}</strong><span class="muted">из 100</span>
     <span class="zone {zone}">{ZONE_TITLES[zone]}</span></div>
   <p style="margin-top:12px"><b>{escape(conclusion.headline)}</b></p>
+  {findings_html}
   {reasons_html}
   <p>{escape(conclusion.recommendation)}</p>
   <p class="note">Уровень риска — максимум за сессию. Система подсвечивает подозрительные
