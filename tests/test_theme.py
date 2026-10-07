@@ -27,6 +27,10 @@ class ThemeTests(unittest.TestCase):
                          "QPushButton#secondary"):
             self.assertIn(selector, theme.MAIN_WINDOW_STYLE)
 
+    def test_message_boxes_get_the_light_background_under_a_dark_system_theme(self):
+        for sheet in (theme.MAIN_WINDOW_STYLE, theme.START_DIALOG_STYLE):
+            self.assertIn("QMessageBox { background: " + theme.PAGE, sheet)
+
     def test_watermark_colour_is_a_dark_rgb_triplet(self):
         self.assertEqual(len(theme.WATERMARK_RGB), 3)
         self.assertTrue(all(0 <= channel <= 90 for channel in theme.WATERMARK_RGB))

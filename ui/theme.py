@@ -40,6 +40,8 @@ MAIN_WINDOW_STYLE = f"""
 QMainWindow, QWidget#page {{ background: {PAGE}; }}
 QWidget {{ color: {TEXT}; font-family: {FONT}; }}
 QLabel {{ background: transparent; }}
+QMessageBox {{ background: {PAGE}; }}
+QMessageBox QLabel {{ color: {TEXT}; font-size: 15px; }}
 QFrame#card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
 QLabel#eyebrow {{ color: {ACCENT}; font-size: 12px; font-weight: 700; }}
 QLabel#heading {{ font-size: 26px; font-weight: 700; }}
@@ -59,6 +61,7 @@ START_DIALOG_STYLE = f"""
 QDialog {{ background: {PAGE}; }}
 QWidget {{ color: {TEXT}; font-family: {FONT}; }}
 QLabel {{ background: transparent; font-size: 14px; }}
+QMessageBox {{ background: {PAGE}; }}
 QLabel#eyebrow {{ color: {ACCENT}; font-size: 12px; font-weight: 700; }}
 QLabel#heading {{ font-size: 24px; font-weight: 700; }}
 QLabel#hint {{ color: {MUTED}; font-size: 13px; }}
