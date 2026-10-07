@@ -324,7 +324,7 @@ class MainWindow(QMainWindow):
                 # One mark over the question card; PROCTOR_WATERMARK=tiled repeats it.
                 tiled=os.getenv("PROCTOR_WATERMARK", "1").strip().lower() == "tiled",
                 centre_x=0.4 if self._student_view else 0.3,
-                opacity=0.16,
+                opacity=0.10,
             )
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
@@ -572,7 +572,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         icon = "●" if ok else "○"
         color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
-        label.setText(f"{icon} {title}: {message}")
+        # "Камера: Камера активна" reads as a stutter; keep the message alone then.
+        repeated = message.casefold().startswith(title.casefold())
+        label.setText(f"{icon} {message}" if repeated else f"{icon} {title}: {message}")
         label.setStyleSheet(f"color:{color};")
 
     def _on_camera_status(self, ok: bool, message: str) -> None:

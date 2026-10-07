@@ -63,6 +63,11 @@ QRadioButton {{ background: {PAGE}; border: 1px solid {BORDER}; border-radius: 1
 QRadioButton:hover {{ border-color: {ACCENT}; }}
 QRadioButton:checked {{ background: {ACCENT_SOFT}; border: 2px solid {ACCENT};
                         padding: 14px 15px; font-weight: 600; }}
+QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 9px;
+                           border: 2px solid #9CA3AF; background: {CARD}; }}
+QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
+QRadioButton::indicator:checked {{ width: 8px; height: 8px; border-radius: 9px;
+                                   border: 5px solid {ACCENT}; background: {CARD}; }}
 QStatusBar {{ background: {PAGE}; color: {CRITICAL_TEXT}; }}
 {_BUTTONS}
 """

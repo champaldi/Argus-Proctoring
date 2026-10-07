@@ -12,8 +12,8 @@ from ui.theme import WATERMARK_RGB
 
 
 # The single mark shrinks to this share of the window width, within limits.
-SINGLE_WIDTH_SHARE = 0.72
-SINGLE_MAX_PIXELS = 46
+SINGLE_WIDTH_SHARE = 0.6
+SINGLE_MAX_PIXELS = 38
 SINGLE_MIN_PIXELS = 18
 
 
