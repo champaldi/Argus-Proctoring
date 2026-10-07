@@ -26,3 +26,12 @@ def session_metadata(student_name: str | None) -> dict[str, str]:
     """Metadata stored with a session; the teacher panel reads ``student_name``."""
     name = normalize_student_name(student_name)
     return {"student_name": name} if name else {}
+
+
+def student_view_enabled() -> bool:
+    """The student sees only the test; PROCTOR_STUDENT_VIEW=0 shows the debug view.
+
+    The debug view keeps the camera preview, module status lines and the
+    end-of-session evidence dialog for demonstrations and development.
+    """
+    return os.getenv("PROCTOR_STUDENT_VIEW", "1").strip() != "0"

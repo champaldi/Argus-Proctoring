@@ -1,6 +1,8 @@
 """Camera shutdown stays responsive and preserves pending evidence."""
 
+import json
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -105,7 +107,10 @@ class CameraLifecycleTests(unittest.TestCase):
         window.question_index = len(QUESTIONS) - 1
         window._render_question()
         window.answer_group.button(0).setChecked(True)
-        with patch("ui.main_window.TeacherReviewDialog") as review:
+        with (
+            patch.dict(os.environ, {"PROCTOR_STUDENT_VIEW": "0"}),
+            patch("ui.main_window.TeacherReviewDialog") as review,
+        ):
             with patch.object(window.camera_thread, "wait", return_value=False):
                 window._next_question()
             self.assertFalse(review.called)
@@ -114,6 +119,34 @@ class CameraLifecycleTests(unittest.TestCase):
             values = review.call_args.kwargs
             self.assertEqual(values["final_risk"], 25)
             self.assertEqual(len(values["events"]), 1)
+
+    def test_student_sees_only_a_completion_message(self):
+        window = self.make_window()
+        window.question_index = len(QUESTIONS) - 1
+        window._render_question()
+        window.answer_group.button(0).setChecked(True)
+        with (
+            patch.dict(os.environ, {"PROCTOR_STUDENT_VIEW": "1"}),
+            patch("ui.main_window.TeacherReviewDialog") as review,
+            patch("ui.main_window.QMessageBox.information") as message,
+        ):
+            window._next_question()
+            window.camera_worker.release.set()
+            self.pump_until(lambda: message.called)
+            self.assertFalse(review.called)
+            self.assertIn("Тест завершён", message.call_args.args)
+        connection = sqlite3.connect(self.config.database_path)
+        try:
+            metadata = json.loads(
+                connection.execute(
+                    "SELECT metadata_json FROM sessions WHERE id = ?",
+                    (window.pipeline.session_id,),
+                ).fetchone()[0]
+            )
+        finally:
+            connection.close()
+        self.assertEqual(metadata["test_total"], len(QUESTIONS))
+        self.assertIn(metadata["test_score"], (0, 1))
 
     def test_cancel_before_run_does_not_open_camera(self):
         detectors = Mock()

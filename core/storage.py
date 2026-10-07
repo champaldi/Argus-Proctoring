@@ -242,6 +242,33 @@ def record_teacher_verdict(
         connection.close()
 
 
+def record_test_score(database_path: Path, session_id: str, score: int, total: int) -> None:
+    """Remember the test result in the session so the teacher's panel can show it."""
+    if isinstance(score, bool) or isinstance(total, bool) or not 0 <= score <= total:
+        raise ValueError("test score must be between 0 and the number of questions")
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"session not found: {session_id}")
+        try:
+            metadata = json.loads(row[0] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["test_score"], metadata["test_total"] = int(score), int(total)
+        connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, default=str), session_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def load_session_events(database_path: Path, session_id: str) -> list[StoredEvent]:
     connection = sqlite3.connect(database_path)
     try:

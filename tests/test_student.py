@@ -80,3 +80,47 @@ class SessionNameStorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StudentViewTests(unittest.TestCase):
+    def test_student_view_is_the_default_and_zero_turns_it_off(self):
+        from core.student import student_view_enabled
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PROCTOR_STUDENT_VIEW", None)
+            self.assertTrue(student_view_enabled())
+        with patch.dict(os.environ, {"PROCTOR_STUDENT_VIEW": " 0 "}):
+            self.assertFalse(student_view_enabled())
+        with patch.dict(os.environ, {"PROCTOR_STUDENT_VIEW": "1"}):
+            self.assertTrue(student_view_enabled())
+
+
+class TestScoreStorageTests(unittest.TestCase):
+    def setUp(self):
+        from core.storage import EventStore
+
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.database = Path(self.temporary.name) / "events.db"
+        store = EventStore(self.database, Path(self.temporary.name) / "shots")
+        store.start_session("s1", {"student_name": "Аня Ким"})
+        store.finish_session("s1", final_risk=0)
+        store.close()
+
+    def test_score_is_added_to_the_session_and_shown_to_the_teacher(self):
+        from core.storage import record_test_score
+
+        record_test_score(self.database, "s1", 7, 10)
+        session = load_sessions(self.database)[0]
+        self.assertEqual(session.metadata["test_score"], 7)
+        self.assertEqual(session.metadata["test_total"], 10)
+        self.assertEqual(session.student_name, "Аня Ким")
+
+    def test_invalid_score_or_unknown_session_is_rejected(self):
+        from core.storage import record_test_score
+
+        for score, total in ((11, 10), (-1, 10), (True, 10)):
+            with self.assertRaises(ValueError):
+                record_test_score(self.database, "s1", score, total)
+        with self.assertRaises(LookupError):
+            record_test_score(self.database, "missing", 1, 10)

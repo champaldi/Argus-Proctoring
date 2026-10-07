@@ -29,12 +29,13 @@ from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
 from core.event_presentation import EVENT_LABELS, application_details
 from core.security import SecurityAdapter
-from core.student import session_metadata, student_name_from_env
+from core.student import session_metadata, student_name_from_env, student_view_enabled
 from core.watermark import watermark_text
 from core.storage import (
     StoredEvent,
     load_session_events,
     record_teacher_verdict,
+    record_test_score,
 )
 from events import ProctorEvent
 from ui.camera_worker import CameraWorker
@@ -64,9 +65,39 @@ QUESTIONS = (
         0,
     ),
     Question(
-        "Какой компонент хранит события сессии в этом проекте?",
-        ("YOLO", "SQLite", "MediaPipe", "Qt Style Sheets"),
+        "Сколько бит в одном байте?",
+        ("4", "8", "16", "1024"),
         1,
+    ),
+    Question(
+        "Какая служба сопоставляет доменное имя с IP-адресом?",
+        ("DHCP", "NAT", "DNS", "VPN"),
+        2,
+    ),
+    Question(
+        "Какой оператор SQL выбирает строки из таблицы?",
+        ("SELECT", "INSERT", "UPDATE", "DROP"),
+        0,
+    ),
+    Question(
+        "Какая сложность у двоичного поиска в отсортированном массиве?",
+        ("O(1)", "O(n)", "O(n log n)", "O(log n)"),
+        3,
+    ),
+    Question(
+        "Чему равно двоичное число 1010 в десятичной системе?",
+        ("8", "10", "12", "20"),
+        1,
+    ),
+    Question(
+        "Какой код ответа HTTP означает «страница не найдена»?",
+        ("200", "301", "404", "500"),
+        2,
+    ),
+    Question(
+        "Какая команda Git отправляет локальные коммиты на сервер?",
+        ("git push", "git pull", "git clone", "git status"),
+        0,
     ),
 )
 
@@ -235,6 +266,7 @@ class MainWindow(QMainWindow):
         self._shutdown_started = False
         self._close_requested = False
         self._review_score: tuple[int, int] | None = None
+        self._student_view = student_view_enabled()
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(25)
         self._shutdown_timer.timeout.connect(self._continue_shutdown)
@@ -287,8 +319,8 @@ class MainWindow(QMainWindow):
         root = QHBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(18)
-        root.addWidget(self._build_test_panel(), 3)
-        root.addWidget(self._build_monitor_panel(), 2)
+        root.addWidget(self._build_test_panel(), 4 if self._student_view else 3)
+        root.addWidget(self._build_monitor_panel(), 1 if self._student_view else 2)
         self.setCentralWidget(central)
         if os.getenv("PROCTOR_WATERMARK", "1").strip() != "0":
             # Imported here so the window still opens if the overlay is unavailable.
@@ -379,6 +411,25 @@ class MainWindow(QMainWindow):
         ):
             label.setObjectName("status")
             camera_layout.addWidget(label)
+        if self._student_view:
+            # The student needs to know that monitoring is on, not how it works:
+            # no camera preview, no module names, no timings.
+            camera_heading.setText("Идёт контроль тестирования")
+            note = QLabel(
+                "Смотрите в экран и оставайтесь в кадре. "
+                "Не пользуйтесь телефоном и другими программами."
+            )
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#9aa8c4; font-size:13px;")
+            camera_layout.insertWidget(1, note)
+            for hidden in (
+                self.camera_label,
+                self.phone_status_label,
+                self.gaze_status_label,
+                self.security_status_label,
+                self.performance_status_label,
+            ):
+                hidden.hide()
         layout.addWidget(camera_card)
 
         layout.addStretch(1)
@@ -442,6 +493,22 @@ class MainWindow(QMainWindow):
         self._review_score = None
         if score is None:
             return
+        try:
+            record_test_score(self.config.database_path, self.pipeline.session_id, *score)
+        except Exception as exc:
+            self._show_runtime_error(
+                f"Не удалось сохранить результат теста: {type(exc).__name__}: {exc}"
+            )
+        if student_view_enabled():
+            # The verdict and the evidence belong to the teacher's panel.
+            self.hide()
+            QMessageBox.information(
+                self,
+                "Тест завершён",
+                "Ваши ответы сохранены. Результат сообщит преподаватель.",
+            )
+            self.close()
+            return
         final_risk = self.pipeline.peak_risk().total
         try:
             events = load_session_events(
@@ -489,7 +556,7 @@ class MainWindow(QMainWindow):
 
     def _show_frame(self) -> None:
         image = self.camera_worker.take_preview() if self.camera_worker is not None else None
-        if image is None or self._shutdown_started:
+        if image is None or self._shutdown_started or self._student_view:
             return
         pixmap = QPixmap.fromImage(image)
         self.camera_label.setPixmap(
