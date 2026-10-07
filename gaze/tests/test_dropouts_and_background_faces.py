@@ -190,8 +190,8 @@ class ConvenienceAnalyzerTests(unittest.TestCase):
         created = {}
 
         class Recorder:
-            def __init__(self, *args, **kwargs):
-                created.update(kwargs)
+            def __init__(self, config, **kwargs):
+                created.update(kwargs, gaze_down_seconds=config.gaze_down_seconds)
 
             def analyze(self, frame):
                 return []
@@ -212,6 +212,7 @@ class ConvenienceAnalyzerTests(unittest.TestCase):
                 "min_extra_face_ratio": DEFAULT_MIN_EXTRA_FACE_RATIO,
                 "down_budget_seconds": gaze_analyzer.DEFAULT_DOWN_BUDGET_SECONDS,
                 "auto_baseline_seconds": gaze_analyzer.DEFAULT_AUTO_BASELINE_SECONDS,
+                "gaze_down_seconds": gaze_analyzer.DEFAULT_GAZE_DOWN_SECONDS,
             },
         )
 

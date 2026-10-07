@@ -55,6 +55,9 @@ DEFAULT_DOWN_WINDOW_SECONDS = 60.0
 # keyboard (measured: the head tilts only about 9 degrees). The first seconds of
 # a session, when the student faces the screen, become the reference.
 DEFAULT_AUTO_BASELINE_SECONDS = 3.0
+# Five seconds let a student read a phone on the keyboard and look back up in
+# time. The application reports a continuous look down sooner.
+DEFAULT_GAZE_DOWN_SECONDS = 4.0
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -1023,6 +1026,7 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     global _default_analyzer
     if _default_analyzer is None:
         _default_analyzer = GazeAnalyzer(
+            AnalyzerConfig(gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS),
             gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
             min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
             down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,

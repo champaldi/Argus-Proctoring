@@ -21,6 +21,7 @@ from .analyzer import (
     CALIBRATION_MIN_SECONDS,
     DEFAULT_AUTO_BASELINE_SECONDS,
     DEFAULT_DOWN_BUDGET_SECONDS,
+    DEFAULT_GAZE_DOWN_SECONDS,
     DEFAULT_GAZE_GAP_SECONDS,
     DEFAULT_MIN_EXTRA_FACE_RATIO,
     EVENT_TYPES,
@@ -80,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--side-seconds", type=float, default=3.0, help="Время взгляда в сторону до события"
     )
     parser.add_argument(
-        "--down-seconds", type=float, default=5.0, help="Время взгляда вниз до события"
+        "--down-seconds", type=float, default=DEFAULT_GAZE_DOWN_SECONDS, help="Время взгляда вниз до события"
     )
     return parser
 
