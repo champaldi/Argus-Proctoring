@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Argus">
+  <rect width="256" height="256" rx="56" fill="#1E3A8A"/>
+  <path d="M36 128C62 86 94 66 128 66s66 20 92 62c-26 42-58 62-92 62s-66-20-92-62Z" fill="none" stroke="#F8F9FA" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="128" cy="128" r="36" fill="#F8F9FA"/>
+  <circle cx="128" cy="128" r="15" fill="#1E3A8A"/>
+  <circle cx="141" cy="115" r="6" fill="#10B981"/>
+</svg>
