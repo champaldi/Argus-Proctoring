@@ -33,6 +33,18 @@ FACE_TOO_CLOSE_RATIO = 0.45
 FACE_TOO_CLOSE_SECONDS = 3.0
 CALIBRATION_MIN_SECONDS = 2.0
 CALIBRATION_MAX_SECONDS = 8.0
+# Reliability settings of the single-stream convenience analyzer used by the
+# application. A plain GazeAnalyzer() keeps the strict behaviour.
+#
+# A held look down or aside is judged frame by frame, and one frame under the
+# threshold used to restart the whole episode, so a real five-second look was
+# often never reported. Brief dropouts up to this long no longer restart it.
+DEFAULT_GAZE_GAP_SECONDS = 0.6
+# A face on a poster or a photo behind the student is much smaller than the
+# student's own. Extra faces narrower than this share of the largest face are
+# ignored instead of being reported as a second person.
+DEFAULT_MIN_EXTRA_FACE_RATIO = 0.4
+GAZE_EVENT_TYPES: frozenset[str] = frozenset({"gaze_down", "gaze_side"})
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -369,6 +381,7 @@ def _median_metrics(samples: Sequence[FaceMetrics]) -> FaceMetrics:
 class _Episode:
     started_at: float | None = None
     emitted: bool = False
+    last_seen: float | None = None
 
 
 class GazeAnalyzer:
@@ -380,8 +393,28 @@ class GazeAnalyzer:
         *,
         face_mesh: FaceMeshProtocol | None = None,
         clock: Callable[[], float] = time.monotonic,
+        gaze_gap_seconds: float = 0.0,
+        min_extra_face_ratio: float = 0.0,
     ) -> None:
         self.config = config or AnalyzerConfig()
+        for name, value in (
+            ("gaze_gap_seconds", gaze_gap_seconds),
+            ("min_extra_face_ratio", min_extra_face_ratio),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be a finite number >= 0")
+        if min_extra_face_ratio > 1.0:
+            raise ValueError("min_extra_face_ratio must be <= 1")
+        if gaze_gap_seconds >= self.config.max_sample_gap_seconds:
+            raise ValueError("gaze_gap_seconds must be below max_sample_gap_seconds")
+        # 0 keeps the strict behaviour: no dropout tolerance, every face counts.
+        self._gaze_gap_seconds = float(gaze_gap_seconds)
+        self._min_extra_face_ratio = float(min_extra_face_ratio)
         if face_mesh is None:
             import mediapipe as mp
 
@@ -541,6 +574,23 @@ class GazeAnalyzer:
             self._keyboard = reference
         self.reset()
 
+    def _significant_faces(self, faces: Sequence[Any]) -> list[Any]:
+        """Largest face first; drop extra faces far smaller than it.
+
+        Without a usable width for the largest face nothing is dropped, so an
+        unmeasurable frame can never hide a second person.
+        """
+        faces = list(faces)
+        if self._min_extra_face_ratio <= 0 or len(faces) < 2:
+            return faces
+        widths = [measure_face_width_ratio(face.landmark) or 0.0 for face in faces]
+        largest = max(widths)
+        if largest <= 0:
+            return faces
+        ranked = sorted(zip(widths, range(len(faces))), key=lambda item: (-item[0], item[1]))
+        limit = largest * self._min_extra_face_ratio
+        return [faces[index] for width, index in ranked if width >= limit]
+
     def _signals(self, metrics: FaceMetrics) -> tuple[EventType, ...]:
         cfg = self.config
         baseline = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
@@ -657,7 +707,7 @@ class GazeAnalyzer:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         detection = self._face_mesh.process(rgb)
-        faces = detection.multi_face_landmarks or []
+        faces = self._significant_faces(detection.multi_face_landmarks or [])
         count = len(faces)
         metrics = None
         face_width_ratio = None
@@ -713,8 +763,18 @@ class GazeAnalyzer:
         elapsed: dict[EventType, float] = {}
         for name, episode in self._episodes.items():
             if name not in signals:
-                episode.started_at, episode.emitted = None, False
+                if (
+                    name in GAZE_EVENT_TYPES
+                    and self._gaze_gap_seconds > 0
+                    and episode.last_seen is not None
+                    and now - episode.last_seen <= self._gaze_gap_seconds
+                ):
+                    # A brief dropout: keep the episode, but never emit on a
+                    # frame that does not itself show the signal.
+                    continue
+                episode.started_at, episode.emitted, episode.last_seen = None, False, None
                 continue
+            episode.last_seen = now
             if episode.started_at is None:
                 episode.started_at = now
             duration = now - episode.started_at
@@ -766,7 +826,10 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     """Convenience API for a single stream. Use instances for multiple students."""
     global _default_analyzer
     if _default_analyzer is None:
-        _default_analyzer = GazeAnalyzer()
+        _default_analyzer = GazeAnalyzer(
+            gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
+            min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+        )
     return _default_analyzer.analyze(frame)
 
 
