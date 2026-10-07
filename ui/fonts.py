@@ -29,3 +29,18 @@ def load_app_fonts(app) -> bool:
         font.setPointSize(10)
         app.setFont(font)
     return loaded
+
+
+def apply_brand_accent(app, colour: str) -> None:
+    """Draw check boxes and radio marks in the brand colour, not the system accent."""
+    from PySide6.QtGui import QColor, QPalette
+
+    palette = app.palette()
+    roles = [QPalette.ColorRole.Highlight]
+    accent = getattr(QPalette.ColorRole, "Accent", None)  # Qt 6.6 and newer
+    if accent is not None:
+        roles.append(accent)
+    for role in roles:
+        palette.setColor(role, QColor(colour))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+    app.setPalette(palette)

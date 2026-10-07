@@ -38,8 +38,9 @@ from core.storage import (
     record_test_score,
 )
 from events import ProctorEvent
-from ui.fonts import load_app_fonts
+from ui.fonts import apply_brand_accent, load_app_fonts
 from ui.theme import (
+    ACCENT,
     APP_NAME,
     MAIN_WINDOW_STYLE,
     MONITOR_NOTE_STYLE,
@@ -646,6 +647,7 @@ def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
     app.setApplicationName(APP_NAME)
     load_app_fonts(app)
+    apply_brand_accent(app, ACCENT)
     # Camera, protection and the session start only after consent and a name.
     student_name = student_name_from_env()
     if student_name is None:
