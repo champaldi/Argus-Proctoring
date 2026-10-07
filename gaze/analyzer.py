@@ -45,6 +45,11 @@ DEFAULT_GAZE_GAP_SECONDS = 0.6
 # ignored instead of being reported as a second person.
 DEFAULT_MIN_EXTRA_FACE_RATIO = 0.4
 GAZE_EVENT_TYPES: frozenset[str] = frozenset({"gaze_down", "gaze_side"})
+# A phone lying on the keyboard can be read in glances shorter than the
+# continuous threshold. Looking down for this many seconds in total within the
+# window is reported as gaze_down too, however short each glance was.
+DEFAULT_DOWN_BUDGET_SECONDS = 15.0
+DEFAULT_DOWN_WINDOW_SECONDS = 60.0
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -395,11 +400,15 @@ class GazeAnalyzer:
         clock: Callable[[], float] = time.monotonic,
         gaze_gap_seconds: float = 0.0,
         min_extra_face_ratio: float = 0.0,
+        down_budget_seconds: float = 0.0,
+        down_window_seconds: float = DEFAULT_DOWN_WINDOW_SECONDS,
     ) -> None:
         self.config = config or AnalyzerConfig()
         for name, value in (
             ("gaze_gap_seconds", gaze_gap_seconds),
             ("min_extra_face_ratio", min_extra_face_ratio),
+            ("down_budget_seconds", down_budget_seconds),
+            ("down_window_seconds", down_window_seconds),
         ):
             if (
                 isinstance(value, bool)
@@ -412,9 +421,17 @@ class GazeAnalyzer:
             raise ValueError("min_extra_face_ratio must be <= 1")
         if gaze_gap_seconds >= self.config.max_sample_gap_seconds:
             raise ValueError("gaze_gap_seconds must be below max_sample_gap_seconds")
-        # 0 keeps the strict behaviour: no dropout tolerance, every face counts.
+        if down_budget_seconds > 0 and down_window_seconds < down_budget_seconds:
+            raise ValueError("down_window_seconds must be >= down_budget_seconds")
+        # 0 keeps the strict behaviour: no dropout tolerance, every face counts,
+        # only a continuous look down is reported.
         self._gaze_gap_seconds = float(gaze_gap_seconds)
         self._min_extra_face_ratio = float(min_extra_face_ratio)
+        self._down_budget_seconds = float(down_budget_seconds)
+        self._down_window_seconds = float(down_window_seconds)
+        # (frame time, seconds of looking down credited to that frame)
+        self._down_spans: deque[tuple[float, float]] = deque()
+        self._down_seen_at: float | None = None
         if face_mesh is None:
             import mediapipe as mp
 
@@ -448,6 +465,8 @@ class GazeAnalyzer:
         self._last_timestamp = None
         self._iris_missing_since: float | None = None
         self._last_deferred_gaze: set[EventType] = set()
+        self._down_spans.clear()
+        self._down_seen_at = None
         self.last_result = AnalysisResult(0, None, (), [], {})
 
     def get_face_width_ratio(self) -> float | None:
@@ -528,6 +547,8 @@ class GazeAnalyzer:
             "elapsed": dict(self.last_result.elapsed),
             "face_width_ratio": self.last_result.face_width_ratio,
             "deferred": sorted(self._last_deferred_gaze),
+            "down_accumulated_seconds": sum(span for _, span in self._down_spans),
+            "down_budget_seconds": self._down_budget_seconds,
             "config": asdict(self.config),
             "episodes": {
                 name: {"started_at": episode.started_at, "emitted": episode.emitted}
@@ -781,26 +802,78 @@ class GazeAnalyzer:
             elapsed[name] = duration
             if duration >= thresholds[name] and not episode.emitted and name not in deferred:
                 episode.emitted = True
-                event: dict[str, Any] = {
-                    "type": name,
-                    "source": "gaze",
-                    "timestamp": now,
-                    "started_at": episode.started_at,
-                    "duration": duration,
-                    "face_count": count,
-                }
-                if face_width_ratio is not None:
-                    event["face_width_ratio"] = face_width_ratio
-                if metrics is not None:
-                    if metrics.head_pose is not None:
-                        event["head_pose"] = asdict(metrics.head_pose)
-                    event["iris_x"], event["iris_y"] = metrics.iris_x, metrics.iris_y
-                events.append(event)
+                if name == "gaze_down":
+                    # Already reported; the same seconds must not count twice.
+                    self._down_spans.clear()
+                events.append(
+                    self._event(name, now, episode.started_at, duration, count,
+                                face_width_ratio, metrics)
+                )
+        accumulated = self._accumulate_down("gaze_down" in signals, now)
+        down_episode = self._episodes["gaze_down"]
+        if (
+            accumulated is not None
+            and not down_episode.emitted
+            and "gaze_down" not in deferred
+        ):
+            started_at, total = accumulated
+            self._down_spans.clear()
+            # One report per look: the continuous timer stays quiet for this one.
+            down_episode.emitted = True
+            event = self._event(
+                "gaze_down", now, started_at, total, count, face_width_ratio, metrics
+            )
+            event["accumulated"] = True
+            event["window_seconds"] = self._down_window_seconds
+            events.append(event)
         self.last_result = AnalysisResult(
             count, metrics, signals, events, elapsed, face_width_ratio
         )
         self._last_deferred_gaze = deferred
         return events
+
+    def _accumulate_down(self, looking_down: bool, now: float) -> tuple[float, float] | None:
+        """Credit this frame; return (first glance time, total) once over budget."""
+        previous, self._down_seen_at = self._down_seen_at, now if looking_down else None
+        if self._down_budget_seconds <= 0:
+            return None
+        while self._down_spans and now - self._down_spans[0][0] > self._down_window_seconds:
+            self._down_spans.popleft()
+        if not looking_down:
+            return None
+        if previous is not None and now > previous:
+            self._down_spans.append((now, now - previous))
+        total = sum(span for _, span in self._down_spans)
+        if total < self._down_budget_seconds:
+            return None
+        first_time, first_span = self._down_spans[0]
+        return first_time - first_span, total
+
+    @staticmethod
+    def _event(
+        name: str,
+        now: float,
+        started_at: float | None,
+        duration: float,
+        count: int,
+        face_width_ratio: float | None,
+        metrics: FaceMetrics | None,
+    ) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "type": name,
+            "source": "gaze",
+            "timestamp": now,
+            "started_at": started_at,
+            "duration": duration,
+            "face_count": count,
+        }
+        if face_width_ratio is not None:
+            event["face_width_ratio"] = face_width_ratio
+        if metrics is not None:
+            if metrics.head_pose is not None:
+                event["head_pose"] = asdict(metrics.head_pose)
+            event["iris_x"], event["iris_y"] = metrics.iris_x, metrics.iris_y
+        return event
 
     def close(self) -> None:
         if not self._closed:
@@ -829,6 +902,7 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
         _default_analyzer = GazeAnalyzer(
             gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
             min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+            down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
         )
     return _default_analyzer.analyze(frame)
 

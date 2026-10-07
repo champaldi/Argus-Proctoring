@@ -19,6 +19,7 @@ import numpy as np
 from .analyzer import (
     CALIBRATION_MAX_SECONDS,
     CALIBRATION_MIN_SECONDS,
+    DEFAULT_DOWN_BUDGET_SECONDS,
     DEFAULT_GAZE_GAP_SECONDS,
     DEFAULT_MIN_EXTRA_FACE_RATIO,
     EVENT_TYPES,
@@ -236,6 +237,12 @@ def format_diagnostics_lines(
         f"| Down deferred={'yes' if 'gaze_down' in diagnostics.get('deferred', ()) else 'no'} "
         f"emitted={emitted_text}"
     )
+    budget = diagnostics.get("down_budget_seconds") or 0
+    if budget:
+        lines.append(
+            f"Down total={diagnostics.get('down_accumulated_seconds', 0.0):.1f}s"
+            f"/{budget:.0f}s per minute"
+        )
     thresholds = diagnostics.get("down_thresholds", {})
     head_threshold = thresholds.get("head_degrees", config.head_down_degrees)
     combined_threshold = thresholds.get("combined_degrees", config.combined_down_degrees)
@@ -429,6 +436,7 @@ def run(args: argparse.Namespace) -> int:
                 config,
                 gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
                 min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+                down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
             )
         )
         profile_loaded = args.profile is not None and load_profile(analyzer, args.profile)
