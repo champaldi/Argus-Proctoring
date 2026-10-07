@@ -19,6 +19,8 @@ import numpy as np
 from .analyzer import (
     CALIBRATION_MAX_SECONDS,
     CALIBRATION_MIN_SECONDS,
+    DEFAULT_GAZE_GAP_SECONDS,
+    DEFAULT_MIN_EXTRA_FACE_RATIO,
     EVENT_TYPES,
     AnalysisResult,
     AnalyzerConfig,
@@ -420,7 +422,15 @@ def run(args: argparse.Namespace) -> int:
             if args.telemetry is not None
             else None
         )
-        analyzer = stack.enter_context(GazeAnalyzer(config))
+        # Same reliability settings as gaze.analyze(), so the demo shows exactly
+        # what the application will report.
+        analyzer = stack.enter_context(
+            GazeAnalyzer(
+                config,
+                gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
+                min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+            )
+        )
         profile_loaded = args.profile is not None and load_profile(analyzer, args.profile)
         calibration_status = analyzer.get_calibration_status()
         started_at = time.monotonic()
