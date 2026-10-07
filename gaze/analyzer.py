@@ -173,6 +173,8 @@ class AnalyzerConfig:
     eyelid_down_degrees: float = 7.0
     eyelid_down_open_ratio: float = 0.75
     relative_head_down_degrees: float = 14.0
+    # Eyes lowered with the head still: the eyelids alone drop this far.
+    eyes_only_down_open_ratio: float = 0.65
     max_num_faces: int = 3
     smoothing_window: int = 3
     calibration_min_samples: int = 10
@@ -196,6 +198,8 @@ class AnalyzerConfig:
             raise ValueError("combined iris threshold must not exceed iris_down_threshold")
         if self.eyelid_down_open_ratio >= 1.0:
             raise ValueError("eyelid_down_open_ratio must be below 1")
+        if self.eyes_only_down_open_ratio > self.eyelid_down_open_ratio:
+            raise ValueError("eyes_only_down_open_ratio must not exceed eyelid_down_open_ratio")
         if self.eyelid_down_degrees > self.relative_head_down_degrees:
             raise ValueError("eyelid_down_degrees must not exceed relative_head_down_degrees")
 
@@ -720,15 +724,20 @@ class GazeAnalyzer:
                 )
             )
         )
-        if pitch is not None and baseline.eye_open is not None:
-            narrowed = (
-                metrics.eye_open is not None
-                and metrics.eye_open <= baseline.eye_open * cfg.eyelid_down_open_ratio
+        if baseline.eye_open is not None:
+            opening = (
+                None if metrics.eye_open is None else metrics.eye_open / baseline.eye_open
             )
             down = (
                 down
-                or pitch >= cfg.relative_head_down_degrees
-                or (narrowed and pitch >= cfg.eyelid_down_degrees)
+                or (pitch is not None and pitch >= cfg.relative_head_down_degrees)
+                or (
+                    opening is not None
+                    and pitch is not None
+                    and pitch >= cfg.eyelid_down_degrees
+                    and opening <= cfg.eyelid_down_open_ratio
+                )
+                or (opening is not None and opening <= cfg.eyes_only_down_open_ratio)
             )
         if self._in_keyboard_zone(metrics):
             down, side = False, False

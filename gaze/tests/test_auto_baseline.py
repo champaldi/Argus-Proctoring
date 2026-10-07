@@ -90,6 +90,22 @@ class AutoBaselineTests(AutoBase):
         self.hold(4.0, AT_SCREEN)
         self.assertEqual(self.hold(6.0, EYES_HIDDEN), ["gaze_down"])
 
+    def test_eyes_lowered_with_a_still_head_are_reported(self):
+        self.hold(4.0, AT_SCREEN)
+        self.assertEqual(self.hold(6.0, look(4.9, 0.15, iris_y=0.25)), ["gaze_down"])
+
+    def test_slightly_lowered_eyes_are_not_reported(self):
+        self.hold(4.0, AT_SCREEN)
+        self.assertEqual(self.hold(30.0, look(4.9, 0.24)), [])
+
+    def test_blinking_is_not_reported(self):
+        self.hold(4.0, AT_SCREEN)
+        events = []
+        for _ in range(40):  # two minutes, a blink every three seconds
+            events.extend(self.hold(2.8, AT_SCREEN))
+            events.extend(self.hold(0.2, look(4.9, 0.03)))
+        self.assertEqual(events, [])
+
     def test_facing_the_screen_after_learning_is_quiet(self):
         self.assertEqual(self.hold(60.0, AT_SCREEN), [])
 
@@ -123,6 +139,8 @@ class StrictTests(Base):
             AnalyzerConfig(eyelid_down_open_ratio=1.0)
         with self.assertRaises(ValueError):
             AnalyzerConfig(eyelid_down_degrees=20.0)
+        with self.assertRaises(ValueError):
+            AnalyzerConfig(eyes_only_down_open_ratio=0.9)
 
 
 class EyeOpeningTests(Base):

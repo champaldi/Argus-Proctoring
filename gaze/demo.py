@@ -267,7 +267,8 @@ def format_diagnostics_lines(
         lines.append(
             f"Down: OR dp>={config.relative_head_down_degrees:.0f} "
             f"OR (dp>={config.eyelid_down_degrees:.0f} "
-            f"AND eyes<={config.eyelid_down_open_ratio:.0%})"
+            f"AND eyes<={config.eyelid_down_open_ratio:.0%}) "
+            f"OR eyes<={config.eyes_only_down_open_ratio:.0%}"
         )
     if calibrating:
         lines.append("COLLECTING PROFILE: gaze_down/gaze_side events are hidden")
