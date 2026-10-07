@@ -36,6 +36,9 @@ PHONE_MIN_HITS = 3
 # Уверенный телефон, прошедший все фильтры, фиксируется с первого же кадра:
 # ждать три наблюдения нужно только для сомнительных рамок.
 PHONE_INSTANT_CONFIDENCE = 0.75
+# Уверенно найденный телефон считается убранным после стольких прогонов
+# подряд без него; следующее появление записывается новым событием.
+PHONE_GONE_RUNS = 2
 DISTRACTOR_CLASS_NAMES = {
     65: "remote",
     73: "book",
@@ -251,6 +254,7 @@ class PhoneDetector:
         """Начинает новую сессию без повторной загрузки весов."""
         self.phone_hits: deque[bool] = deque(maxlen=PHONE_WINDOW)
         self.instant_episode = False
+        self.phone_missing_runs = 0
         self.aimed_since: float | None = None
         self.aimed_missing_since: float | None = None
         self.no_person_since: float | None = None
@@ -364,10 +368,15 @@ class PhoneDetector:
         self.phone_hits.append(bool(phones))
         hits = sum(self.phone_hits)
         best = max(phones, key=lambda item: item.confidence) if phones else None
+        self.phone_missing_runs = 0 if phones else self.phone_missing_runs + 1
         if best is not None and best.confidence >= PHONE_INSTANT_CONFIDENCE:
             self.instant_episode = True
-        elif hits == 0:
+        elif self.instant_episode and self.phone_missing_runs >= PHONE_GONE_RUNS:
+            # Иначе старые наблюдения в окне держали бы эпизод ещё полторы
+            # секунды, и телефон, показанный снова, не давал бы события.
             self.instant_episode = False
+            self.phone_hits.clear()
+            hits = 0
         if hits < PHONE_MIN_HITS and not self.instant_episode:
             self.last_emitted.pop(EventType.PHONE_DETECTED, None)
         elif best is not None:

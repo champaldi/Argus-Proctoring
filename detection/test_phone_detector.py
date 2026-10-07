@@ -363,10 +363,22 @@ class InstantPhoneTests(unittest.TestCase):
         actual = self.run_frames([strong, weak, strong, weak], (0, 0.5, 1.0, 1.5))
         self.assertEqual(actual, [["phone_detected"], [], [], []])
 
-    def test_confident_phone_is_reported_again_after_it_left_the_window(self):
-        frames = [[box(0), box(67, 60, 0.9)]] + [[box(0)]] * 5 + [[box(0), box(67, 60, 0.9)]]
-        actual = self.run_frames(frames, range(7))
-        self.assertEqual(actual, [["phone_detected"]] + [[]] * 5 + [["phone_detected"]])
+    def test_each_showing_is_reported_after_two_runs_without_the_phone(self):
+        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
+        frames = [shown, hidden, hidden, shown, shown, shown, hidden, hidden, shown]
+        actual = self.run_frames(frames, range(9))
+        phone = ["phone_detected"]
+        self.assertEqual(actual, [phone, [], [], phone, [], [], [], [], phone])
+
+    def test_one_missed_run_does_not_split_a_confident_episode(self):
+        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
+        actual = self.run_frames([shown, hidden, shown, hidden, shown], range(5))
+        self.assertEqual(actual, [["phone_detected"], [], [], [], []])
+
+    def test_long_showing_then_quick_return_is_a_new_event(self):
+        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
+        actual = self.run_frames([shown] * 5 + [hidden] * 2 + [shown], range(8))
+        self.assertEqual(actual, [["phone_detected"]] + [[]] * 6 + [["phone_detected"]])
 
     def test_phone_below_instant_confidence_still_waits_for_three_runs(self):
         actual = self.run_frames([[box(0), box(67, 60, 0.74)]] * 3, range(3))
