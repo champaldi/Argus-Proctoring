@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.student import STUDENT_NAME_MAX_LENGTH, normalize_student_name
+from ui.theme import APP_NAME, APP_TAGLINE, START_DIALOG_STYLE, window_title
 
 
 CONSENT_TEXT = (
@@ -34,29 +35,18 @@ class StudentStartDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Proctoring · Начало теста")
+        self.setWindowTitle(window_title("Начало теста"))
         self.setModal(True)
-        self.setMinimumWidth(520)
-        self.setStyleSheet(
-            """
-            QDialog { background: #0b1020; color: #e8edf7; }
-            QLabel { color: #e8edf7; font-size: 14px; }
-            QLabel#heading { font-size: 22px; font-weight: 700; }
-            QLabel#hint { color: #9aa8c4; font-size: 13px; }
-            QLineEdit { background: #17223a; color: #e8edf7; border: 1px solid #2a3a5b;
-                        border-radius: 8px; padding: 10px; font-size: 15px; }
-            QLineEdit:focus { border-color: #5d7df6; }
-            QCheckBox { color: #e8edf7; font-size: 14px; }
-            QPushButton { background: #5d7df6; color: white; border: 0;
-                          border-radius: 9px; padding: 11px 18px; font-weight: 700; }
-            QPushButton:disabled { background: #34415e; color: #8290aa; }
-            QPushButton#secondary { background: #202d49; }
-            """
-        )
+        self.setMinimumWidth(560)
+        self.setStyleSheet(START_DIALOG_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(26, 24, 26, 24)
         layout.setSpacing(14)
+
+        eyebrow = QLabel(f"{APP_NAME.upper()} · {APP_TAGLINE.upper()}")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
 
         heading = QLabel("Перед началом теста")
         heading.setObjectName("heading")

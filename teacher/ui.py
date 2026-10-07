@@ -46,6 +46,8 @@ from .data import (
     risk_zone,
     summarize_events,
 )
+from ui.theme import window_title
+
 from .conclusion import build_conclusion
 from .report import default_report_name, write_session_report
 
@@ -175,7 +177,7 @@ class TeacherWindow(QMainWindow):
         self.sessions: list[Session] = []
         self.review_values: dict[str, Review] = {}
         self.detail_session: Session | None = None
-        self.setWindowTitle("Proctoring · Панель преподавателя")
+        self.setWindowTitle(window_title("Панель преподавателя"))
         self.resize(1320, 830)
         self.setMinimumSize(980, 650)
         self.setStyleSheet("""

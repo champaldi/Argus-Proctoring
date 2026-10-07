@@ -38,6 +38,14 @@ from core.storage import (
     record_test_score,
 )
 from events import ProctorEvent
+from ui.theme import (
+    APP_NAME,
+    MAIN_WINDOW_STYLE,
+    MONITOR_NOTE_STYLE,
+    STATUS_OK_COLOR,
+    STATUS_WARNING_COLOR,
+    window_title,
+)
 from ui.camera_worker import CameraWorker
 
 
@@ -291,31 +299,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.start_monitoring)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Proctoring · Контроль тестирования")
+        self.setWindowTitle(window_title("Тестирование"))
         self.resize(1280, 780)
         self.setMinimumSize(1050, 680)
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #0b1020; color: #e8edf7; }
-            QFrame#card { background: #121a2d; border: 1px solid #26334f;
-                          border-radius: 14px; }
-            QLabel#eyebrow { color: #7f8fae; font-size: 11px; font-weight: 700; }
-            QLabel#heading { font-size: 25px; font-weight: 700; }
-            QLabel#question { font-size: 19px; font-weight: 600; }
-            QLabel#status { padding: 7px 10px; background: #1c2944;
-                            border-radius: 8px; }
-            QRadioButton { background: #17223a; border: 1px solid #2a3a5b;
-                           border-radius: 10px; padding: 13px; font-size: 14px; }
-            QRadioButton:hover { border-color: #5d7df6; }
-            QPushButton { background: #5d7df6; color: white; border: 0;
-                          border-radius: 9px; padding: 11px 18px; font-weight: 700; }
-            QPushButton:hover { background: #7290ff; }
-            QPushButton:disabled { background: #34415e; color: #8290aa; }
-            QPushButton#secondary { background: #202d49; }
-            """
-        )
+        self.setStyleSheet(MAIN_WINDOW_STYLE)
 
         central = QWidget()
+        central.setObjectName("page")
         root = QHBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(18)
@@ -420,7 +410,7 @@ class MainWindow(QMainWindow):
                 "Не пользуйтесь телефоном и другими программами."
             )
             note.setWordWrap(True)
-            note.setStyleSheet("color:#9aa8c4; font-size:13px;")
+            note.setStyleSheet(MONITOR_NOTE_STYLE)
             camera_layout.insertWidget(1, note)
             for hidden in (
                 self.camera_label,
@@ -575,7 +565,7 @@ class MainWindow(QMainWindow):
         message: str,
     ) -> None:
         icon = "●" if ok else "○"
-        color = "#55d6a9" if ok else "#f0a45d"
+        color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
         label.setText(f"{icon} {title}: {message}")
         label.setStyleSheet(f"color:{color};")
 
@@ -649,7 +639,7 @@ class MainWindow(QMainWindow):
 
 def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
-    app.setApplicationName("Proctoring")
+    app.setApplicationName(APP_NAME)
     # Camera, protection and the session start only after consent and a name.
     student_name = student_name_from_env()
     if student_name is None:

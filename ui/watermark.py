@@ -8,6 +8,8 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
+from ui.theme import WATERMARK_RGB
+
 
 class WatermarkOverlay(QWidget):
     """Draws the student's name, session and time over everything in ``parent``.
@@ -27,8 +29,7 @@ class WatermarkOverlay(QWidget):
     ) -> None:
         super().__init__(parent)
         self._text_source = text_source
-        # Mid grey stays readable on both dark and light themes.
-        self._color = QColor(140, 150, 165)
+        self._color = QColor(*WATERMARK_RGB)
         self._color.setAlphaF(max(0.02, min(0.5, opacity)))
         self._angle = angle
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
