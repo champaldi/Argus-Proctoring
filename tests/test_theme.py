@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from ui import theme
+from ui import fonts, theme
 
 
 class ThemeTests(unittest.TestCase):
@@ -30,6 +30,11 @@ class ThemeTests(unittest.TestCase):
     def test_message_boxes_get_the_light_background_under_a_dark_system_theme(self):
         for sheet in (theme.MAIN_WINDOW_STYLE, theme.START_DIALOG_STYLE):
             self.assertIn("QMessageBox { background: " + theme.PAGE, sheet)
+
+    def test_bundled_inter_files_and_licence_are_present(self):
+        self.assertEqual(len(fonts.font_paths()), len(fonts.FONT_FILES))
+        self.assertTrue((fonts.FONT_DIR / "OFL.txt").is_file())
+        self.assertTrue(theme.FONT.startswith(f'"{fonts.FONT_FAMILY}"'))
 
     def test_watermark_colour_is_a_dark_rgb_triplet(self):
         self.assertEqual(len(theme.WATERMARK_RGB), 3)

@@ -11,6 +11,12 @@ from PySide6.QtWidgets import QWidget
 from ui.theme import WATERMARK_RGB
 
 
+# The single mark shrinks to this share of the window width, within limits.
+SINGLE_WIDTH_SHARE = 0.72
+SINGLE_MAX_PIXELS = 46
+SINGLE_MIN_PIXELS = 18
+
+
 class WatermarkOverlay(QWidget):
     """Draws the student's name, session and time over everything in ``parent``.
 
@@ -26,9 +32,14 @@ class WatermarkOverlay(QWidget):
         opacity: float = 0.18,
         angle: float = -24.0,
         refresh_ms: int = 30_000,
+        tiled: bool = False,
+        centre_x: float = 0.5,
     ) -> None:
         super().__init__(parent)
         self._text_source = text_source
+        self._tiled = tiled
+        # Horizontal position of the single mark as a share of the width.
+        self._centre_x = max(0.1, min(0.9, centre_x))
         self._color = QColor(*WATERMARK_RGB)
         self._color.setAlphaF(max(0.02, min(0.5, opacity)))
         self._angle = angle
@@ -57,11 +68,15 @@ class WatermarkOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        font = QFont(self.font())
-        font.setPixelSize(20)
-        font.setBold(True)
-        painter.setFont(font)
         painter.setPen(self._color)
+        font = QFont(self.font())
+        font.setBold(True)
+        if not self._tiled:
+            self._paint_single(painter, font, text)
+            painter.end()
+            return
+        font.setPixelSize(20)
+        painter.setFont(font)
         metrics = QFontMetrics(font)
         step_x = metrics.horizontalAdvance(text) + 140
         step_y = 150
@@ -79,3 +94,18 @@ class WatermarkOverlay(QWidget):
             y += step_y
             row += 1
         painter.end()
+
+    def _paint_single(self, painter: QPainter, font: QFont, text: str) -> None:
+        """One large mark across the middle, sized to the window."""
+        size = SINGLE_MAX_PIXELS
+        font.setPixelSize(size)
+        width = QFontMetrics(font).horizontalAdvance(text)
+        target = self.width() * SINGLE_WIDTH_SHARE
+        if width > target > 0:
+            size = max(SINGLE_MIN_PIXELS, int(size * target / width))
+            font.setPixelSize(size)
+            width = QFontMetrics(font).horizontalAdvance(text)
+        painter.setFont(font)
+        painter.translate(self.width() * self._centre_x, self.height() / 2)
+        painter.rotate(self._angle)
+        painter.drawText(int(-width / 2), int(size / 3), text)

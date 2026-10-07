@@ -7,6 +7,9 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
+from ui.fonts import load_app_fonts
+from ui.theme import APP_NAME
+
 from config import AppConfig
 
 from .seed_demo import DEMO_DIR
@@ -28,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     database = args.db or source
     reviews = args.reviews or (DEMO_DIR if args.demo else STATE_DIR) / "reviews.db"
     app = QApplication.instance() or QApplication([])
-    app.setApplicationName("Proctoring · Преподаватель")
+    app.setApplicationName(f"{APP_NAME} · Преподаватель")
+    load_app_fonts(app)
     window = TeacherWindow(database, reviews)
     window.show()
     return app.exec()

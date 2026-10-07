@@ -38,6 +38,7 @@ from core.storage import (
     record_test_score,
 )
 from events import ProctorEvent
+from ui.fonts import load_app_fonts
 from ui.theme import (
     APP_NAME,
     MAIN_WINDOW_STYLE,
@@ -319,6 +320,10 @@ class MainWindow(QMainWindow):
             self.watermark = WatermarkOverlay(
                 central,
                 lambda: watermark_text(self.student_name, self.pipeline.session_id),
+                # One mark over the question card; PROCTOR_WATERMARK=tiled repeats it.
+                tiled=os.getenv("PROCTOR_WATERMARK", "1").strip().lower() == "tiled",
+                centre_x=0.4 if self._student_view else 0.3,
+                opacity=0.16,
             )
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
@@ -640,6 +645,7 @@ class MainWindow(QMainWindow):
 def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
     app.setApplicationName(APP_NAME)
+    load_app_fonts(app)
     # Camera, protection and the session start only after consent and a name.
     student_name = student_name_from_env()
     if student_name is None:

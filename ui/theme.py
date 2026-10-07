@@ -7,8 +7,8 @@ match the project presentation, so the demo video and the slides look alike.
 from __future__ import annotations
 
 # Shown in window titles. Change the name of the product here only.
-APP_NAME = "Adal"
-APP_TAGLINE = "честный экзамен"
+APP_NAME = "Argus"
+APP_TAGLINE = "локальный прокторинг"
 
 PAGE = "#f7f6f0"
 CARD = "#fffefa"
@@ -19,7 +19,8 @@ ACCENT = "#1e7a55"
 ACCENT_DARK = "#17603f"
 ACCENT_SOFT = "#e4f1ea"
 WARNING = "#9a5a00"
-FONT = '"Segoe UI Variable Text", "Segoe UI", "Inter", sans-serif'
+# Inter ships with the application (ui/fonts); Segoe UI is the fallback.
+FONT = '"Inter", "Segoe UI", sans-serif'
 
 
 def window_title(section: str) -> str:
