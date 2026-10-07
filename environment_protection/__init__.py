@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import atexit
+import os
 import threading
 
 from .controller import Protection, ProtectionConfig
 
 __all__ = ["Protection", "ProtectionConfig", "enable", "disable", "status", "drain_events"]
 
+ALLOW_CAPTURE_ENV = "PROCTOR_ALLOW_SCREEN_CAPTURE"
 _protection: Protection | None = None
 _lock = threading.RLock()
 
@@ -20,6 +22,9 @@ def enable(callback=None, *, hwnd=None, config: ProtectionConfig | None = None):
     drain_events(). Ctrl+Alt+F12 always requests immediate release.
     """
     global _protection
+    if config is None and os.getenv(ALLOW_CAPTURE_ENV, "").strip() == "1":
+        # Demo recording only: screen recorders cannot see a protected window.
+        config = ProtectionConfig(protect_capture=False)
     with _lock:
         if _protection is None:
             from .windows import WindowsBackend

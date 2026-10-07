@@ -145,6 +145,20 @@ class WindowsBackend:
             return False
         return True
 
+    def clear_clipboard(self):
+        """Empty the system clipboard; returns False when another app holds it."""
+        try:
+            import win32clipboard
+
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            return False
+        return True
+
     def is_remote_session(self):
         return bool(self.user32.GetSystemMetrics(SM_REMOTESESSION))
 

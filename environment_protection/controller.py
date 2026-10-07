@@ -61,6 +61,10 @@ DEFAULT_SERVICE_NAMES = frozenset(
     }
 )
 
+# Alt combinations that leave or close the test window, by physical scan code:
+# Tab (switch), F4 (close), Esc (cycle windows), Space (window menu).
+_ALT_HOTKEYS = {15: "alt+tab", 62: "alt+f4", 1: "alt+esc", 57: "alt+space"}
+
 
 @dataclass(frozen=True)
 class ProtectionConfig:
@@ -71,7 +75,12 @@ class ProtectionConfig:
     max_seconds: float = 4 * 60 * 60.0
     injected_input_idle_seconds: float = 1.0
     # Keep the test window maximized and above every other window.
+    # Hide the test window from screen capture. Turn off only to record a demo.
+    protect_capture: bool = True
     lock_window: bool = True
+    # Empty the clipboard when the test starts and ends, so text can neither be
+    # brought into the test nor carried out of it.
+    clear_clipboard: bool = True
     blocked_process_names: frozenset[str] = DEFAULT_PROCESS_NAMES
     blocked_service_names: frozenset[str] = DEFAULT_SERVICE_NAMES
 
@@ -116,6 +125,7 @@ class _Session:
     last_injected_input: float | None = None
     capture_protected: bool = False
     window_locked: bool = False
+    clipboard_pending: bool = False
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     threads: list[threading.Thread] = field(default_factory=list)
     reason: str = "enabled"
@@ -163,9 +173,13 @@ class Protection:
             session = _Session(target, pid, callback, time.monotonic() + self.config.max_seconds)
             self._session = session
             try:
-                session.capture_protected = self.backend.protect_capture(target)
-                if not session.capture_protected:
-                    self._emit(session, "capture_protection_failed", target_hwnd=target)
+                if self.config.protect_capture:
+                    session.capture_protected = self.backend.protect_capture(target)
+                    if not session.capture_protected:
+                        self._emit(session, "capture_protection_failed", target_hwnd=target)
+                if self.config.clear_clipboard:
+                    self._clear_clipboard()
+                    session.clipboard_pending = True
                 if self.config.lock_window:
                     lock = getattr(self.backend, "lock_window", None)
                     session.window_locked = bool(lock(target)) if callable(lock) else False
@@ -246,6 +260,9 @@ class Protection:
                     session.error = f"{type(exc).__name__}: {exc}"
                 else:
                     session.remove_input_hook = None
+            if session.clipboard_pending:
+                session.clipboard_pending = False
+                self._clear_clipboard()
             if session.window_locked:
                 try:
                     unlocked = self.backend.unlock_window(session.hwnd)
@@ -275,6 +292,16 @@ class Protection:
                     session.error = f"{type(exc).__name__}: {exc}"
                 else:
                     session.remove_hook = None
+
+    def _clear_clipboard(self) -> None:
+        clear = getattr(self.backend, "clear_clipboard", None)
+        if not callable(clear):
+            return
+        try:
+            clear()
+        except Exception:
+            # A busy clipboard must never stop protection or its cleanup.
+            pass
 
     def _emit(self, session: _Session, kind: str, **details):
         if session.stopped.is_set():
@@ -324,12 +351,15 @@ class Protection:
                 hotkey = "win"
             elif name in {"print screen", "printscreen", "snapshot"}:
                 hotkey = "print screen"
-            elif "alt" in modifiers and scan == 15:
-                hotkey = "alt+tab"
+            elif "alt" in modifiers and scan in _ALT_HOTKEYS:
+                hotkey = _ALT_HOTKEYS[scan]
+            elif "ctrl" in modifiers and scan == 1:
+                # Start menu, or Task Manager together with Shift.
+                hotkey = "ctrl+shift+esc" if "shift" in modifiers else "ctrl+esc"
             elif "ctrl" in modifiers:
                 # Physical Windows scan codes work in both English and Russian layouts.
-                if scan in {46, 47}:
-                    hotkey = "ctrl+c" if scan == 46 else "ctrl+v"
+                if scan in {45, 46, 47}:
+                    hotkey = {45: "ctrl+x", 46: "ctrl+c", 47: "ctrl+v"}[scan]
                 elif scan == 15:
                     hotkey = "ctrl+shift+tab" if "shift" in modifiers else "ctrl+tab"
                 elif name in {"page up", "page down"}:

@@ -31,6 +31,8 @@ class FakeDesktop:
         self.lock_succeeds = True
         self.unlock_succeeds = True
         self.lock_calls = []
+        self.clipboard_clears = 0
+        self.fail_clipboard = False
         self.remote_session = False
         self.monitor_count_value = 1
         self.fail_input_remove = False
@@ -56,6 +58,12 @@ class FakeDesktop:
     def unlock_window(self, hwnd):
         self.lock_calls.append(("unlock", hwnd))
         return self.unlock_succeeds
+
+    def clear_clipboard(self):
+        self.clipboard_clears += 1
+        if self.fail_clipboard:
+            raise RuntimeError("clipboard is busy")
+        return True
 
     def is_remote_session(self):
         return self.remote_session
@@ -228,6 +236,63 @@ class ProtectionTests(unittest.TestCase):
         hook(key("alt", 56))
         hook(key("f12", 88))
         self.assertTrue(wait_for(lambda: ("unlock", 100) in self.desktop.lock_calls))
+
+    def test_combinations_that_close_or_leave_the_test_are_blocked(self):
+        hook = self.start()
+        cases = [
+            (("alt", 56),), "f4", 62, "alt+f4",
+            (("alt", 56),), "esc", 1, "alt+esc",
+            (("alt", 56),), "space", 57, "alt+space",
+            (("ctrl", 29),), "esc", 1, "ctrl+esc",
+            (("ctrl", 29), ("shift", 42)), "esc", 1, "ctrl+shift+esc",
+            (("ctrl", 29),), "ч", 45, "ctrl+x",
+        ]
+        expected = []
+        for index in range(0, len(cases), 4):
+            modifiers, name, scan, label = cases[index:index + 4]
+            for modifier, modifier_scan in modifiers:
+                self.assertTrue(hook(key(modifier, modifier_scan)))
+            self.assertFalse(hook(key(name, scan)), label)
+            self.assertFalse(hook(key(name, scan, "up")), label)
+            for modifier, modifier_scan in modifiers:
+                self.assertTrue(hook(key(modifier, modifier_scan, "up")))
+            expected.append(label)
+        self.assertTrue(wait_for(lambda: len(self.events) == len(expected)))
+        self.assertEqual([item["details"]["hotkey"] for item in self.events], expected)
+
+    def test_plain_escape_and_f4_are_not_blocked(self):
+        hook = self.start()
+        self.assertTrue(hook(key("esc", 1)))
+        self.assertTrue(hook(key("f4", 62)))
+        self.assertTrue(hook(key("space", 57)))
+        self.assertEqual(self.events, [])
+
+    def test_clipboard_is_emptied_at_start_and_once_at_the_end(self):
+        self.start()
+        self.assertEqual(self.desktop.clipboard_clears, 1)
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(self.desktop.clipboard_clears, 2)
+
+    def test_busy_clipboard_does_not_stop_protection(self):
+        self.desktop.fail_clipboard = True
+        self.start()
+        self.assertTrue(self.protection.status()["enabled"])
+        self.protection.disable()
+        self.assertIsNone(self.desktop.hook)
+
+    def test_capture_protection_can_be_switched_off_for_demo_recording(self):
+        from environment_protection.controller import Protection, ProtectionConfig
+
+        protection = Protection(self.desktop, ProtectionConfig(protect_capture=False))
+        protection.enable(self.events.append)
+        try:
+            self.assertFalse(protection.status()["capture_protected"])
+            self.assertEqual(self.desktop.capture_calls, [])
+            self.assertEqual(self.events, [])
+        finally:
+            protection.disable()
+        self.assertEqual(self.desktop.capture_calls, [])
 
     def test_capture_protection_failure_is_reported_without_locking_desktop(self):
         self.desktop.capture_succeeds = False
