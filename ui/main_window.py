@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,7 @@ from core.pipeline import EventPipeline
 from core.event_presentation import EVENT_LABELS, application_details
 from core.security import SecurityAdapter
 from core.student import session_metadata, student_name_from_env
+from core.watermark import watermark_text
 from core.storage import (
     StoredEvent,
     load_session_events,
@@ -288,6 +290,14 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_test_panel(), 3)
         root.addWidget(self._build_monitor_panel(), 2)
         self.setCentralWidget(central)
+        if os.getenv("PROCTOR_WATERMARK", "1").strip() != "0":
+            # Imported here so the window still opens if the overlay is unavailable.
+            from ui.watermark import WatermarkOverlay
+
+            self.watermark = WatermarkOverlay(
+                central,
+                lambda: watermark_text(self.student_name, self.pipeline.session_id),
+            )
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
