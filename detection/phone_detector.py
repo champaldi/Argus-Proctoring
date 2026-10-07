@@ -57,7 +57,10 @@ AIMED_SECONDS = 1.5
 AIMED_MISSING_GRACE_SECONDS = 0.7
 NO_PERSON_SECONDS = 3.0
 ENABLE_NO_PERSON = False
-DETECT_EVERY_N_FRAMES = 3
+# Приложение вызывает детектор 6 раз в секунду: каждый второй вызов даёт
+# три прогона YOLO в секунду. При каждом третьем их было два, и телефон,
+# показанный на секунду, мог не попасть ни в один.
+DETECT_EVERY_N_FRAMES = 2
 MODEL_NAME = "yolov8s.pt"
 _verifier_warning_printed = False
 
