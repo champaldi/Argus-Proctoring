@@ -33,6 +33,9 @@ PHONE_CONFIDENCE = 0.35
 PHONE_MAX_ASPECT: float | None = None
 PHONE_WINDOW = 5
 PHONE_MIN_HITS = 3
+# Уверенный телефон, прошедший все фильтры, фиксируется с первого же кадра:
+# ждать три наблюдения нужно только для сомнительных рамок.
+PHONE_INSTANT_CONFIDENCE = 0.75
 DISTRACTOR_CLASS_NAMES = {
     65: "remote",
     73: "book",
@@ -244,6 +247,7 @@ class PhoneDetector:
     def reset(self) -> None:
         """Начинает новую сессию без повторной загрузки весов."""
         self.phone_hits: deque[bool] = deque(maxlen=PHONE_WINDOW)
+        self.instant_episode = False
         self.aimed_since: float | None = None
         self.aimed_missing_since: float | None = None
         self.no_person_since: float | None = None
@@ -356,10 +360,15 @@ class PhoneDetector:
         # Один промах модели больше не обнуляет накопленные наблюдения.
         self.phone_hits.append(bool(phones))
         hits = sum(self.phone_hits)
-        if hits < PHONE_MIN_HITS:
+        best = max(phones, key=lambda item: item.confidence) if phones else None
+        if best is not None and best.confidence >= PHONE_INSTANT_CONFIDENCE:
+            self.instant_episode = True
+        elif hits == 0:
+            self.instant_episode = False
+        if hits < PHONE_MIN_HITS and not self.instant_episode:
             self.last_emitted.pop(EventType.PHONE_DETECTED, None)
-        elif phones:
-            phone = max(phones, key=lambda item: item.confidence)
+        elif best is not None:
+            phone = best
             event = self._emit(
                 EventType.PHONE_DETECTED, now, phone_count=phone_count,
                 confidence=phone.confidence, aspect=phone.aspect,

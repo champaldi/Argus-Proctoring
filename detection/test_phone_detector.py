@@ -45,10 +45,15 @@ class PhoneDetectorTests(unittest.TestCase):
         self.every_frame.start()
         self.no_verifier = patch.object(phone_module, "USE_VERIFIER", False)
         self.no_verifier.start()
+        # These tests describe the three-of-five vote; the first-frame path
+        # for confident phones has its own class below.
+        self.no_instant = patch.object(phone_module, "PHONE_INSTANT_CONFIDENCE", 2.0)
+        self.no_instant.start()
 
     def tearDown(self):
         self.every_frame.stop()
         self.no_verifier.stop()
+        self.no_instant.stop()
 
     def test_phone_needs_three_of_five_model_runs_and_emits_once_per_episode(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0), box(67, 60)],
@@ -338,6 +343,38 @@ class PhoneDetectorTests(unittest.TestCase):
             phone_module.reset_default_detector()
             self.assertIsNone(phone_module._default_detector)
         close.assert_called_once()
+
+
+class InstantPhoneTests(unittest.TestCase):
+    def setUp(self):
+        for name, value in (("DETECT_EVERY_N_FRAMES", 1), ("USE_VERIFIER", False)):
+            patcher = patch.object(phone_module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_frames(self, frames, times):
+        detector = PhoneDetector(model=FakeModel(frames))
+        return [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
+                for t in times]
+
+    def test_confident_phone_is_reported_on_the_first_frame_once(self):
+        weak = [box(0), box(67, 60, 0.6)]
+        strong = [box(0), box(67, 60, 0.9)]
+        actual = self.run_frames([strong, weak, strong, weak], (0, 0.5, 1.0, 1.5))
+        self.assertEqual(actual, [["phone_detected"], [], [], []])
+
+    def test_confident_phone_is_reported_again_after_it_left_the_window(self):
+        frames = [[box(0), box(67, 60, 0.9)]] + [[box(0)]] * 5 + [[box(0), box(67, 60, 0.9)]]
+        actual = self.run_frames(frames, range(7))
+        self.assertEqual(actual, [["phone_detected"]] + [[]] * 5 + [["phone_detected"]])
+
+    def test_phone_below_instant_confidence_still_waits_for_three_runs(self):
+        actual = self.run_frames([[box(0), box(67, 60, 0.74)]] * 3, range(3))
+        self.assertEqual(actual, [[], [], ["phone_detected"]])
+
+    def test_threshold_itself_is_instant(self):
+        actual = self.run_frames([[box(0), box(67, 60, 0.75)]], [0])
+        self.assertEqual(actual, [["phone_detected"]])
 
 
 if __name__ == "__main__":
