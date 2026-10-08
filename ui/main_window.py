@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from PySide6.QtWidgets import (
 )
 
 from config import AppConfig, RISK_RED_ABOVE, RISK_YELLOW_FROM
+from core.watermark import watermark_text
+from ui.theme import APP_NAME, window_title
 from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
@@ -245,7 +248,7 @@ class TeacherReviewDialog(QDialog):
         super().__init__(parent)
         self.database_path = database_path
         self.session_id = session_id
-        self.setWindowTitle("Итоги сессии · Проверка преподавателем")
+        self.setWindowTitle(window_title("Итоги сессии"))
         self.resize(900, 720)
         self.setModal(True)
         self.setStyleSheet(
@@ -402,7 +405,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.start_monitoring)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Proctoring · Контроль тестирования")
+        self.setWindowTitle(window_title("Тестирование"))
         self.resize(1280, 780)
         self.setMinimumSize(1050, 680)
         self.setStyleSheet(
@@ -437,6 +440,18 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_test_panel(), 3)
         root.addWidget(self._build_monitor_panel(), 2)
         self.setCentralWidget(central)
+        if os.getenv("PROCTOR_WATERMARK", "1").strip() != "0":
+            # One faint mark over the question: the student, the session and the
+            # time stay on any phone photo of the screen.
+            from ui.watermark import WatermarkOverlay
+
+            self.watermark = WatermarkOverlay(
+                central,
+                lambda: watermark_text(None, self.pipeline.session_id),
+                centre_x=0.3,
+                opacity=0.14,
+                rgb=(205, 214, 235),
+            )
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -730,7 +745,7 @@ class MainWindow(QMainWindow):
 
 def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
-    app.setApplicationName("Proctoring")
+    app.setApplicationName(APP_NAME)
     window = MainWindow(config)
     window.show()
     try:
