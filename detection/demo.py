@@ -11,7 +11,6 @@ from pathlib import Path
 import cv2
 
 from events import EventType
-from core.image_io import write_image
 from .phone_detector import PERSON_CLASS_ID, PhoneDetector
 
 
@@ -23,7 +22,6 @@ def main() -> int:
     """Читает кадры до нажатия q и показывает рамки объектов."""
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
     camera = cv2.VideoCapture(0, backend)
-    detector: PhoneDetector | None = None
     try:
         if not camera.isOpened():
             print("Не удалось открыть веб-камеру 0", file=sys.stderr)
@@ -86,15 +84,12 @@ def main() -> int:
                 folder = SAMPLES_DIR / ("phone" if key == ord("p") else "not_phone")
                 folder.mkdir(parents=True, exist_ok=True)
                 path = folder / f"{datetime.now():%Y%m%d_%H%M%S_%f}.jpg"
-                write_image(path, frame)
+                if not cv2.imwrite(str(path), frame):
+                    raise OSError(f"Не удалось сохранить кадр: {path}")
                 print(f"Сохранён кадр: {path}", flush=True)
     finally:
-        try:
-            if detector is not None:
-                detector.close()
-        finally:
-            camera.release()
-            cv2.destroyAllWindows()
+        camera.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

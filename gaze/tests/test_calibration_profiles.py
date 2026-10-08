@@ -69,7 +69,7 @@ class CalibrationProfileTests(unittest.TestCase):
         profile = self.analyzer.export_calibration()
         self.assertEqual(set(profile), {"version", "screen", "keyboard"})
         for target in ("screen", "keyboard"):
-            self.assertEqual(set(profile[target]), {"head_pose", "iris_x", "iris_y", "eye_open"})
+            self.assertEqual(set(profile[target]), {"head_pose", "iris_x", "iris_y"})
             self.assertEqual(set(profile[target]["head_pose"]), {"pitch", "yaw", "roll"})
         json.dumps(profile, allow_nan=False)
         profile["screen"]["head_pose"]["pitch"] = 999

@@ -45,15 +45,14 @@ class PhoneDetectorTests(unittest.TestCase):
         self.every_frame.start()
         self.no_verifier = patch.object(phone_module, "USE_VERIFIER", False)
         self.no_verifier.start()
-        # These tests describe the three-of-five vote; the first-frame path
-        # for confident phones has its own class below.
-        self.no_instant = patch.object(phone_module, "PHONE_INSTANT_CONFIDENCE", 2.0)
-        self.no_instant.start()
+        # These tests describe the original three-of-five vote.
+        self.three_hits = patch.object(phone_module, "APP_PHONE_MIN_HITS", 3)
+        self.three_hits.start()
+        self.addCleanup(self.three_hits.stop)
 
     def tearDown(self):
         self.every_frame.stop()
         self.no_verifier.stop()
-        self.no_instant.stop()
 
     def test_phone_needs_three_of_five_model_runs_and_emits_once_per_episode(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0), box(67, 60)],
@@ -64,6 +63,14 @@ class PhoneDetectorTests(unittest.TestCase):
         actual = [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
                   for t in times]
         self.assertEqual(actual, [[], [], ["phone_detected"], [], []])
+
+    def test_demo_setting_counts_a_phone_after_two_runs(self):
+        with patch.object(phone_module, "APP_PHONE_MIN_HITS", 2):
+            model = FakeModel([[box(0), box(67, 60)]] * 2)
+            detector = PhoneDetector(model=model)
+            actual = [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
+                      for t in range(2)]
+        self.assertEqual(actual, [[], ["phone_detected"]])
 
     def test_phone_window_accepts_one_missed_detection(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0)], [box(0), box(67, 60)],
@@ -307,139 +314,6 @@ class PhoneDetectorTests(unittest.TestCase):
         path = Path(yolo.call_args.args[0])
         self.assertEqual(path.parent, Path(phone_module.__file__).resolve().parent)
         self.assertEqual(path.name, "yolov8s.pt")
-
-    def test_close_releases_models_and_rejects_new_frames(self):
-        class ClosableModel(FakeModel):
-            def __init__(self):
-                super().__init__([[box(67)]])
-                self.closed = 0
-
-            def close(self):
-                self.closed += 1
-
-        model = ClosableModel()
-        with patch.object(phone_module, "USE_VERIFIER", True), patch(
-            "detection.verifier.warmup"
-        ), patch("detection.verifier.release") as release, patch(
-            "detection.verifier.verify_phone", return_value=0.8
-        ):
-            detector = PhoneDetector(model=model)
-            detector.detect(FRAME, timestamp=0)
-            detector.close()
-            detector.close()
-        self.assertEqual(model.closed, 1)
-        release.assert_called_once()
-        self.assertIsNone(detector.model)
-        self.assertEqual(detector.verifier_cache, [])
-        self.assertEqual(detector.last_detections, [])
-        with self.assertRaises(RuntimeError):
-            detector.detect(FRAME)
-
-    def test_reset_default_detector_closes_old_instance(self):
-        detector = PhoneDetector(model=FakeModel([]))
-        with patch.object(phone_module, "_default_detector", detector), patch.object(
-            detector, "close"
-        ) as close:
-            phone_module.reset_default_detector()
-            self.assertIsNone(phone_module._default_detector)
-        close.assert_called_once()
-
-
-class InstantPhoneTests(unittest.TestCase):
-    def setUp(self):
-        for name, value in (("DETECT_EVERY_N_FRAMES", 1), ("USE_VERIFIER", False)):
-            patcher = patch.object(phone_module, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-    def run_frames(self, frames, times):
-        detector = PhoneDetector(model=FakeModel(frames))
-        return [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
-                for t in times]
-
-    def test_confident_phone_is_reported_on_the_first_frame_once(self):
-        weak = [box(0), box(67, 60, 0.6)]
-        strong = [box(0), box(67, 60, 0.9)]
-        actual = self.run_frames([strong, weak, strong, weak], (0, 0.5, 1.0, 1.5))
-        self.assertEqual(actual, [["phone_detected"], [], [], []])
-
-    def test_each_showing_is_reported_after_two_runs_without_the_phone(self):
-        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
-        frames = [shown, hidden, hidden, shown, shown, shown, hidden, hidden, shown]
-        actual = self.run_frames(frames, range(9))
-        phone = ["phone_detected"]
-        self.assertEqual(actual, [phone, [], [], phone, [], [], [], [], phone])
-
-    def test_one_missed_run_does_not_split_a_confident_episode(self):
-        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
-        actual = self.run_frames([shown, hidden, shown, hidden, shown], range(5))
-        self.assertEqual(actual, [["phone_detected"], [], [], [], []])
-
-    def test_long_showing_then_quick_return_is_a_new_event(self):
-        shown, hidden = [box(0), box(67, 60, 0.9)], [box(0)]
-        actual = self.run_frames([shown] * 5 + [hidden] * 2 + [shown], range(8))
-        self.assertEqual(actual, [["phone_detected"]] + [[]] * 6 + [["phone_detected"]])
-
-    def test_phone_below_instant_confidence_still_waits_for_three_runs(self):
-        actual = self.run_frames([[box(0), box(67, 60, 0.74)]] * 3, range(3))
-        self.assertEqual(actual, [[], [], ["phone_detected"]])
-
-    def run_scored(self, confidence, verifier_score):
-        """One frame whose phone carries a score from the second model."""
-        phone = phone_module.Detection(67, confidence, (10, 60, 30, 80), verifier_score)
-        person = phone_module.Detection(0, 0.9, (10, 10, 30, 30))
-        analysis = phone_module.FrameAnalysis([person, phone], [])
-        detector = PhoneDetector(model=FakeModel([]))
-        with patch.object(phone_module, "analyze_frame", return_value=analysis):
-            return [event.type.value for event in detector.detect(FRAME, timestamp=0)]
-
-    def test_both_models_agreeing_is_instant_at_lower_confidence(self):
-        self.assertEqual(self.run_scored(0.67, 0.99), ["phone_detected"])
-        self.assertEqual(self.run_scored(0.45, 0.90), ["phone_detected"])
-
-    def test_weak_agreement_still_waits(self):
-        self.assertEqual(self.run_scored(0.67, 0.5), [])
-        self.assertEqual(self.run_scored(0.40, 0.99), [])
-        self.assertEqual(self.run_scored(0.67, None), [])
-
-    def test_threshold_itself_is_instant(self):
-        actual = self.run_frames([[box(0), box(67, 60, 0.75)]], [0])
-        self.assertEqual(actual, [["phone_detected"]])
-
-
-class ClassicProfileTests(unittest.TestCase):
-    def setUp(self):
-        patcher = patch.object(phone_module, "USE_VERIFIER", False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def run_calls(self, model_frames, calls):
-        """``model_frames`` feed the model runs; YOLO runs on every second call."""
-        detector = PhoneDetector(
-            model=FakeModel(model_frames), settings=phone_module.CLASSIC_PHONE_SETTINGS
-        )
-        return [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
-                for t in range(calls)]
-
-    def test_two_sightings_in_five_runs_are_enough(self):
-        phone = [box(0), box(67, 60, 0.9)]
-        actual = self.run_calls([phone, phone], 4)
-        self.assertEqual(actual, [[], [], ["phone_detected"], []])
-
-    def test_one_missed_run_between_sightings_is_tolerated(self):
-        phone, empty = [box(0), box(67, 60, 0.9)], [box(0)]
-        actual = self.run_calls([phone, empty, phone], 5)
-        self.assertEqual(actual, [[], [], [], [], ["phone_detected"]])
-
-    def test_confident_phone_does_not_fire_on_the_first_run(self):
-        actual = self.run_calls([[box(0), box(67, 60, 0.95)]], 1)
-        self.assertEqual(actual, [[]])
-
-    def test_profile_defaults_to_classic(self):
-        with patch.dict("os.environ", {phone_module.DETECTION_PROFILE_ENV: ""}):
-            self.assertEqual(phone_module.detection_profile(), "classic")
-        with patch.dict("os.environ", {phone_module.DETECTION_PROFILE_ENV: "adaptive"}):
-            self.assertEqual(phone_module.detection_profile(), "adaptive")
 
 
 if __name__ == "__main__":

@@ -33,17 +33,8 @@ PHONE_CONFIDENCE = 0.35
 PHONE_MAX_ASPECT: float | None = None
 PHONE_WINDOW = 5
 PHONE_MIN_HITS = 3
-# Уверенный телефон, прошедший все фильтры, фиксируется с первого же кадра:
-# ждать три наблюдения нужно только для сомнительных рамок.
-PHONE_INSTANT_CONFIDENCE = 0.75
-# Телефон у края кадра или в тёмном чехле YOLO оценивает ниже (измерено: 67 %),
-# но CLIP на настоящих телефонах даёт 0,97-1,00. Согласие двух моделей тоже
-# фиксируется с первого кадра.
-PHONE_INSTANT_VERIFIED_CONFIDENCE = 0.45
-PHONE_INSTANT_VERIFIER_SCORE = 0.9
-# Уверенно найденный телефон считается убранным после стольких прогонов
-# подряд без него; следующее появление записывается новым событием.
-PHONE_GONE_RUNS = 2
+# Demo: a phone counts after two sightings in five model runs.
+APP_PHONE_MIN_HITS = 2
 DISTRACTOR_CLASS_NAMES = {
     65: "remote",
     73: "book",
@@ -65,25 +56,8 @@ AIMED_SECONDS = 1.5
 AIMED_MISSING_GRACE_SECONDS = 0.7
 NO_PERSON_SECONDS = 3.0
 ENABLE_NO_PERSON = False
-# Приложение вызывает детектор 6 раз в секунду: каждый второй вызов даёт
-# три прогона YOLO в секунду. При каждом третьем их было два, и телефон,
-# показанный на секунду, мог не попасть ни в один.
-DETECT_EVERY_N_FRAMES = 2
+DETECT_EVERY_N_FRAMES = 3
 MODEL_NAME = "yolov8s.pt"
-# Профиль детекции в приложении. "classic" — поведение версии 6 октября
-# (три кадра из пяти, без мгновенного срабатывания), но быстрее: два кадра из
-# пяти и YOLO на каждом втором вызове. "adaptive" — мгновенный уверенный телефон.
-DETECTION_PROFILE_ENV = "PROCTOR_DETECTION_PROFILE"
-CLASSIC_PHONE_SETTINGS = {
-    "min_hits": 2,
-    "every_n": 2,
-    "instant": False,
-}
-
-
-def detection_profile() -> str:
-    value = os.getenv(DETECTION_PROFILE_ENV, "classic").strip().lower()
-    return "adaptive" if value == "adaptive" else "classic"
 _verifier_warning_printed = False
 
 
@@ -231,51 +205,24 @@ def analyze_frame(
 class PhoneDetector:
     """Хранит счётчики и таймеры для одного потока камеры."""
 
-    def __init__(self, *, model: Any = None, settings: dict[str, Any] | None = None) -> None:
-        # Без settings детектор читает модульные константы, как раньше.
-        self._settings = dict(settings or {})
+    def __init__(self, *, model: Any = None) -> None:
         if model is None:
             model = load_model()
         self.model = model
-        self._closed = False
-        self._verifier_acquired = False
         self.verifier_enabled = USE_VERIFIER
         if self.verifier_enabled:
             try:
                 from .verifier import warmup
 
                 warmup()
-                self._verifier_acquired = True
             except Exception as error:
                 self.verifier_enabled = False
                 _warn_verifier_unavailable(error)
         self.reset()
 
-    def close(self) -> None:
-        """Освобождает модели и наблюдения; повторный вызов безопасен."""
-        if self._closed:
-            return
-        self._closed = True
-        model = self.model
-        self.model = None
-        self.verifier_enabled = False
-        self.reset()
-        try:
-            close_model = getattr(model, "close", None)
-            if callable(close_model):
-                close_model()
-        finally:
-            if self._verifier_acquired:
-                from .verifier import release
-
-                release()
-                self._verifier_acquired = False
-
     def reset(self) -> None:
         """Начинает новую сессию без повторной загрузки весов."""
         self.phone_hits: deque[bool] = deque(maxlen=PHONE_WINDOW)
-        self.instant_episode = False
-        self.phone_missing_runs = 0
         self.aimed_since: float | None = None
         self.aimed_missing_since: float | None = None
         self.no_person_since: float | None = None
@@ -335,8 +282,6 @@ class PhoneDetector:
 
     def detect(self, frame: np.ndarray, *, timestamp: float | None = None) -> list[ProctorEvent]:
         """Обрабатывает один BGR-кадр и возвращает новые события."""
-        if self._closed:
-            raise RuntimeError("PhoneDetector is closed")
         if (
             not isinstance(frame, np.ndarray)
             or frame.dtype != np.uint8
@@ -355,8 +300,7 @@ class PhoneDetector:
         # На пропущенном кадре сохраняем наблюдения и начало таймеров.
         # События появятся при следующем кадре, обработанном YOLO.
         next_frame = self.frames_seen + 1
-        every_n = self._settings.get("every_n", DETECT_EVERY_N_FRAMES)
-        if (next_frame - 1) % every_n != 0:
+        if (next_frame - 1) % DETECT_EVERY_N_FRAMES != 0:
             self.frames_seen = next_frame
             self.last_timestamp = now
             return []
@@ -389,27 +333,10 @@ class PhoneDetector:
         # Один промах модели больше не обнуляет накопленные наблюдения.
         self.phone_hits.append(bool(phones))
         hits = sum(self.phone_hits)
-        best = max(phones, key=lambda item: item.confidence) if phones else None
-        self.phone_missing_runs = 0 if phones else self.phone_missing_runs + 1
-        if best is not None and self._settings.get("instant", True) and (
-            best.confidence >= PHONE_INSTANT_CONFIDENCE
-            or (
-                best.verifier_score is not None
-                and best.verifier_score >= PHONE_INSTANT_VERIFIER_SCORE
-                and best.confidence >= PHONE_INSTANT_VERIFIED_CONFIDENCE
-            )
-        ):
-            self.instant_episode = True
-        elif self.instant_episode and self.phone_missing_runs >= PHONE_GONE_RUNS:
-            # Иначе старые наблюдения в окне держали бы эпизод ещё полторы
-            # секунды, и телефон, показанный снова, не давал бы события.
-            self.instant_episode = False
-            self.phone_hits.clear()
-            hits = 0
-        if hits < self._settings.get("min_hits", PHONE_MIN_HITS) and not self.instant_episode:
+        if hits < APP_PHONE_MIN_HITS:
             self.last_emitted.pop(EventType.PHONE_DETECTED, None)
-        elif best is not None:
-            phone = best
+        elif phones:
+            phone = max(phones, key=lambda item: item.confidence)
             event = self._emit(
                 EventType.PHONE_DETECTED, now, phone_count=phone_count,
                 confidence=phone.confidence, aspect=phone.aspect,
@@ -478,16 +405,11 @@ def detect(frame: np.ndarray) -> list[ProctorEvent]:
     """Точка входа, которую вызывает core.detectors.DetectorAdapter."""
     global _default_detector
     if _default_detector is None:
-        _default_detector = PhoneDetector(
-            settings=CLASSIC_PHONE_SETTINGS if detection_profile() == "classic" else None
-        )
+        _default_detector = PhoneDetector()
     return _default_detector.detect(frame)
 
 
 def reset_default_detector() -> None:
-    """Закрывает модель функции detect перед новой сессией."""
+    """Сбрасывает состояние функции detect перед новой сессией."""
     global _default_detector
-    previous = _default_detector
     _default_detector = None
-    if previous is not None:
-        previous.close()

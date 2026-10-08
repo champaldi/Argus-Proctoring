@@ -33,9 +33,9 @@ def check(host_path: Path | None = None) -> dict:
         if not (host_path / "events.py").is_file():
             report["errors"].append(f"Shared events.py is missing in {host_path}")
             return report
-        # This gaze package is already imported. Resolve the shared contract
-        # and adapters from the requested host before the current directory.
-        sys.path.insert(0, str(host_path))
+        # Keep this gaze package first; only the shared contract/adapters come
+        # from the application being checked.
+        sys.path.insert(1, str(host_path))
     try:
         installed = {package: version(package) for package in EXPECTED_PACKAGES}
         checks["packages"] = installed
@@ -48,20 +48,11 @@ def check(host_path: Path | None = None) -> dict:
             raise RuntimeError("; ".join(mismatches))
 
         host = importlib.import_module("events")
-        contract_path = Path(host.__file__).resolve()
-        if host_path is not None and contract_path != (host_path / "events.py").resolve():
-            # Replacing a cached module would leave existing adapters/tests
-            # holding a different ProctorEvent class, so require a fresh process.
-            raise RuntimeError(
-                f"events.py already loaded from {contract_path}; "
-                f"requested {(host_path / 'events.py').resolve()}. "
-                "Run gaze.check in a fresh Python process for this host."
-            )
         supported = {item.value for item in host.EventType}
         missing = set(EVENT_TYPES) - supported
         if missing:
             raise RuntimeError(f"Shared events.py has no event types: {sorted(missing)}")
-        checks["host_contract"] = str(contract_path)
+        checks["host_contract"] = str(Path(host.__file__).resolve())
 
         # Real model and actual normalized events, with deterministic video
         # timestamps. A blank test frame is the expected no-face observation.

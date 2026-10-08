@@ -33,77 +33,6 @@ FACE_TOO_CLOSE_RATIO = 0.45
 FACE_TOO_CLOSE_SECONDS = 3.0
 CALIBRATION_MIN_SECONDS = 2.0
 CALIBRATION_MAX_SECONDS = 8.0
-# Reliability settings of the single-stream convenience analyzer used by the
-# application. A plain GazeAnalyzer() keeps the strict behaviour.
-#
-# A held look down or aside is judged frame by frame, and one frame under the
-# threshold used to restart the whole episode, so a real five-second look was
-# often never reported. Brief dropouts up to this long no longer restart it.
-DEFAULT_GAZE_GAP_SECONDS = 0.6
-# A face on a poster or a photo behind the student is much smaller than the
-# student's own. Extra faces narrower than this share of the largest face are
-# ignored instead of being reported as a second person.
-DEFAULT_MIN_EXTRA_FACE_RATIO = 0.4
-GAZE_EVENT_TYPES: frozenset[str] = frozenset({"gaze_down", "gaze_side"})
-# A phone lying on the keyboard can be read in glances shorter than the
-# continuous threshold. Looking down for this many seconds in total within the
-# window is reported as gaze_down too, however short each glance was.
-DEFAULT_DOWN_BUDGET_SECONDS = 15.0
-DEFAULT_DOWN_WINDOW_SECONDS = 60.0
-# Without a calibration step the analyzer has no idea where "at the screen" is
-# for this camera and this student, and absolute thresholds miss a look at the
-# keyboard (measured: the head tilts only about 9 degrees). The first seconds of
-# a session, when the student faces the screen, become the reference.
-DEFAULT_AUTO_BASELINE_SECONDS = 3.0
-# Five seconds let a student read a phone on the keyboard and look back up in
-# time. The application reports a continuous look down sooner.
-DEFAULT_GAZE_DOWN_SECONDS = 4.0
-# In the application the gaze module shares the processor with YOLO and CLIP,
-# and with a screen recorder on top frames reach it less than once a second.
-# A strict one-second limit then reset every timer and the learned reference
-# before any look could last four seconds. The application tolerates longer
-# gaps between frames and longer single-frame dropouts.
-DEFAULT_MAX_SAMPLE_GAP_SECONDS = 3.0
-DEFAULT_APP_GAZE_GAP_SECONDS = 1.5
-# Profile of the application's analyzer (PROCTOR_DETECTION_PROFILE).
-# "classic": the behaviour of 6 October (fixed straight-ahead reference, head
-# and iris thresholds), faster: 2 s aside, 3 s down. Tolerance to slow frames
-# and the background-face filter stay. "adaptive": the learned reference,
-# eyelids and the per-minute total.
-DETECTION_PROFILE_ENV = "PROCTOR_DETECTION_PROFILE"
-CLASSIC_GAZE_SIDE_SECONDS = 2.0
-CLASSIC_GAZE_DOWN_SECONDS = 3.0
-
-
-def detection_profile() -> str:
-    value = os.getenv(DETECTION_PROFILE_ENV, "classic").strip().lower()
-    return "adaptive" if value == "adaptive" else "classic"
-
-
-def build_application_analyzer(**overrides: Any) -> "GazeAnalyzer":
-    """The analyzer gaze.analyze() uses, for the profile chosen by environment."""
-    if detection_profile() == "classic":
-        return GazeAnalyzer(
-            AnalyzerConfig(
-                gaze_side_seconds=CLASSIC_GAZE_SIDE_SECONDS,
-                gaze_down_seconds=CLASSIC_GAZE_DOWN_SECONDS,
-                max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
-            ),
-            gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
-            min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
-            **overrides,
-        )
-    return GazeAnalyzer(
-        AnalyzerConfig(
-            gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS,
-            max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
-        ),
-        gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
-        min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
-        down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
-        auto_baseline_seconds=DEFAULT_AUTO_BASELINE_SECONDS,
-        **overrides,
-    )
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -216,14 +145,6 @@ class AnalyzerConfig:
     keyboard_yaw_tolerance: float = 10.0
     keyboard_iris_tolerance: float = 0.15
     min_eye_open_ratio: float = 0.12
-    # Used only against a measured screen reference that includes eye opening.
-    # Looking down lowers the upper eyelids, so a modest head tilt together with
-    # visibly narrower eyes is a look down; a larger tilt is one on its own.
-    eyelid_down_degrees: float = 7.0
-    eyelid_down_open_ratio: float = 0.75
-    relative_head_down_degrees: float = 14.0
-    # Eyes lowered with the head still: the eyelids alone drop this far.
-    eyes_only_down_open_ratio: float = 0.65
     max_num_faces: int = 3
     smoothing_window: int = 3
     calibration_min_samples: int = 10
@@ -245,12 +166,6 @@ class AnalyzerConfig:
             raise ValueError("combined_down_degrees must not exceed head_down_degrees")
         if self.combined_iris_down_threshold > self.iris_down_threshold:
             raise ValueError("combined iris threshold must not exceed iris_down_threshold")
-        if self.eyelid_down_open_ratio >= 1.0:
-            raise ValueError("eyelid_down_open_ratio must be below 1")
-        if self.eyes_only_down_open_ratio > self.eyelid_down_open_ratio:
-            raise ValueError("eyes_only_down_open_ratio must not exceed eyelid_down_open_ratio")
-        if self.eyelid_down_degrees > self.relative_head_down_degrees:
-            raise ValueError("eyelid_down_degrees must not exceed relative_head_down_degrees")
 
 
 @dataclass(frozen=True)
@@ -268,8 +183,6 @@ class FaceMetrics:
     iris_x: float | None = None
     iris_y: float | None = None
     iris_centers: tuple[tuple[float, float], ...] = ()
-    # Eye height divided by eye width, averaged over both eyes.
-    eye_open: float | None = None
 
 
 def is_calibration_sample_valid(
@@ -405,53 +318,10 @@ def _measure_eye(
     return x, y
 
 
-def _eye_opening(
-    landmarks: Sequence[Any], indices: tuple[int, int, int, int], width: int, height: int
-) -> float | None:
-    corner_a, corner_b, top, bottom = _points(landmarks, indices, width, height)
-    if not np.isfinite([corner_a, corner_b, top, bottom]).all():
-        return None
-    if corner_a[0] > corner_b[0]:
-        corner_a, corner_b = corner_b, corner_a
-    horizontal = corner_b - corner_a
-    eye_width = float(np.linalg.norm(horizontal))
-    if eye_width < 3:
-        return None
-    horizontal /= eye_width
-    vertical = np.array([-horizontal[1], horizontal[0]])
-    return max(0.0, float(np.dot(bottom - top, vertical)) / eye_width)
-
-
-def measure_eye_opening(landmarks: Sequence[Any], width: int, height: int) -> float | None:
-    """Mean eye height/width ratio; also defined for nearly closed eyes."""
-    if len(landmarks) < 387:
-        return None
-    values = [
-        _eye_opening(landmarks, indices, width, height)
-        for indices in ((33, 133, 159, 145), (362, 263, 386, 374))
-    ]
-    return None if None in values else float(sum(values) / 2)
-
-
 def measure_face(
     landmarks: Sequence[Any], width: int, height: int, min_eye_open_ratio: float = 0.12
 ) -> FaceMetrics | None:
-    """Return head pose, iris location and eye opening."""
-    measured = _measure_face(landmarks, width, height, min_eye_open_ratio)
-    if measured is None:
-        return None
-    return FaceMetrics(
-        measured.head_pose,
-        measured.iris_x,
-        measured.iris_y,
-        measured.iris_centers,
-        measure_eye_opening(landmarks, width, height),
-    )
-
-
-def _measure_face(
-    landmarks: Sequence[Any], width: int, height: int, min_eye_open_ratio: float
-) -> FaceMetrics | None:
+    """Return head pose and iris location; iris centers approximate pupils."""
     pose = estimate_head_pose(landmarks, width, height)
     if len(landmarks) < 478:
         return FaceMetrics(pose) if pose is not None else None
@@ -483,18 +353,15 @@ def _median_metrics(samples: Sequence[FaceMetrics]) -> FaceMetrics:
             )
         )
     )
-    openings = [s.eye_open for s in samples if s.eye_open is not None]
-    eye_open = None if latest.eye_open is None else float(np.median(openings))
     # Do not resurrect an iris estimate during a blink using previous frames.
     eyes = [s for s in samples if s.iris_x is not None and s.iris_y is not None]
     if latest.iris_x is None or latest.iris_y is None:
-        return FaceMetrics(pose, iris_centers=latest.iris_centers, eye_open=eye_open)
+        return FaceMetrics(pose, iris_centers=latest.iris_centers)
     return FaceMetrics(
         pose,
         float(np.median([s.iris_x for s in eyes])),
         float(np.median([s.iris_y for s in eyes])),
         latest.iris_centers,
-        eye_open,
     )
 
 
@@ -502,7 +369,6 @@ def _median_metrics(samples: Sequence[FaceMetrics]) -> FaceMetrics:
 class _Episode:
     started_at: float | None = None
     emitted: bool = False
-    last_seen: float | None = None
 
 
 class GazeAnalyzer:
@@ -514,46 +380,8 @@ class GazeAnalyzer:
         *,
         face_mesh: FaceMeshProtocol | None = None,
         clock: Callable[[], float] = time.monotonic,
-        gaze_gap_seconds: float = 0.0,
-        min_extra_face_ratio: float = 0.0,
-        down_budget_seconds: float = 0.0,
-        down_window_seconds: float = DEFAULT_DOWN_WINDOW_SECONDS,
-        auto_baseline_seconds: float = 0.0,
     ) -> None:
         self.config = config or AnalyzerConfig()
-        for name, value in (
-            ("gaze_gap_seconds", gaze_gap_seconds),
-            ("min_extra_face_ratio", min_extra_face_ratio),
-            ("down_budget_seconds", down_budget_seconds),
-            ("down_window_seconds", down_window_seconds),
-            ("auto_baseline_seconds", auto_baseline_seconds),
-        ):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                or value < 0
-            ):
-                raise ValueError(f"{name} must be a finite number >= 0")
-        if min_extra_face_ratio > 1.0:
-            raise ValueError("min_extra_face_ratio must be <= 1")
-        if gaze_gap_seconds >= self.config.max_sample_gap_seconds:
-            raise ValueError("gaze_gap_seconds must be below max_sample_gap_seconds")
-        if down_budget_seconds > 0 and down_window_seconds < down_budget_seconds:
-            raise ValueError("down_window_seconds must be >= down_budget_seconds")
-        # 0 keeps the strict behaviour: no dropout tolerance, every face counts,
-        # only a continuous look down is reported.
-        self._gaze_gap_seconds = float(gaze_gap_seconds)
-        self._min_extra_face_ratio = float(min_extra_face_ratio)
-        self._down_budget_seconds = float(down_budget_seconds)
-        self._down_window_seconds = float(down_window_seconds)
-        # (frame time, seconds of looking down credited to that frame)
-        self._down_spans: deque[tuple[float, float]] = deque()
-        self._down_seen_at: float | None = None
-        # 0 keeps the fixed default reference until calibrate() is called.
-        self._auto_baseline_seconds = float(auto_baseline_seconds)
-        self._auto_screen: FaceMetrics | None = None
-        self._auto_samples: list[tuple[float, FaceMetrics]] = []
         if face_mesh is None:
             import mediapipe as mp
 
@@ -587,10 +415,6 @@ class GazeAnalyzer:
         self._last_timestamp = None
         self._iris_missing_since: float | None = None
         self._last_deferred_gaze: set[EventType] = set()
-        self._down_spans.clear()
-        self._down_seen_at = None
-        # A learned reference survives, like a calibration; partial samples do not.
-        self._auto_samples.clear()
         self.last_result = AnalysisResult(0, None, (), [], {})
 
     def get_face_width_ratio(self) -> float | None:
@@ -610,7 +434,6 @@ class GazeAnalyzer:
                 "head_pose": asdict(reference.head_pose),
                 "iris_x": reference.iris_x,
                 "iris_y": reference.iris_y,
-                "eye_open": reference.eye_open,
             }
 
         return {"version": 1, "screen": pack(self._screen), "keyboard": pack(self._keyboard)}
@@ -631,18 +454,12 @@ class GazeAnalyzer:
                 pose = value["head_pose"]
                 numbers = [pose[name] for name in ("pitch", "yaw", "roll")]
                 iris_x, iris_y = value["iris_x"], value["iris_y"]
-                # Absent in profiles saved before eye opening was measured.
-                eye_open = value.get("eye_open")
-                if eye_open is not None and not (
-                    isinstance(eye_open, (int, float)) and math.isfinite(eye_open)
-                ):
-                    raise ValueError("Profile measurements must be numbers")
-                for number in (*numbers, iris_x, iris_y, eye_open):
+                for number in (*numbers, iris_x, iris_y):
                     if number is not None and (
                         isinstance(number, bool) or not isinstance(number, (int, float))
                     ):
                         raise ValueError("Profile measurements must be numbers")
-                reference = FaceMetrics(HeadPose(*numbers), iris_x, iris_y, eye_open=eye_open)
+                reference = FaceMetrics(HeadPose(*numbers), iris_x, iris_y)
                 if not is_calibration_sample_valid(reference, target=target):
                     raise ValueError("Profile measurements are not valid")
                 return reference
@@ -664,12 +481,8 @@ class GazeAnalyzer:
 
         raw = self._history[-1] if self._history else None
         measured = self.last_result.metrics
-        screen = self._reference()
+        screen = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
         return {
-            "baseline_source": (
-                "calibrated" if self._screen else "auto" if self._auto_screen else "default"
-            ),
-            "eye_open": None if raw is None else raw.eye_open,
             "raw_metrics": pack(raw),
             "smoothed_metrics": pack(measured),
             "screen": pack(screen),
@@ -682,8 +495,6 @@ class GazeAnalyzer:
             "elapsed": dict(self.last_result.elapsed),
             "face_width_ratio": self.last_result.face_width_ratio,
             "deferred": sorted(self._last_deferred_gaze),
-            "down_accumulated_seconds": sum(span for _, span in self._down_spans),
-            "down_budget_seconds": self._down_budget_seconds,
             "config": asdict(self.config),
             "episodes": {
                 name: {"started_at": episode.started_at, "emitted": episode.emitted}
@@ -730,26 +541,9 @@ class GazeAnalyzer:
             self._keyboard = reference
         self.reset()
 
-    def _significant_faces(self, faces: Sequence[Any]) -> list[Any]:
-        """Largest face first; drop extra faces far smaller than it.
-
-        Without a usable width for the largest face nothing is dropped, so an
-        unmeasurable frame can never hide a second person.
-        """
-        faces = list(faces)
-        if self._min_extra_face_ratio <= 0 or len(faces) < 2:
-            return faces
-        widths = [measure_face_width_ratio(face.landmark) or 0.0 for face in faces]
-        largest = max(widths)
-        if largest <= 0:
-            return faces
-        ranked = sorted(zip(widths, range(len(faces))), key=lambda item: (-item[0], item[1]))
-        limit = largest * self._min_extra_face_ratio
-        return [faces[index] for width, index in ranked if width >= limit]
-
     def _signals(self, metrics: FaceMetrics) -> tuple[EventType, ...]:
         cfg = self.config
-        baseline = self._reference()
+        baseline = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
         yaw = None if metrics.head_pose is None else metrics.head_pose.yaw - baseline.head_pose.yaw
         pitch = (
             None
@@ -773,45 +567,9 @@ class GazeAnalyzer:
                 )
             )
         )
-        if baseline.eye_open is not None:
-            opening = (
-                None if metrics.eye_open is None else metrics.eye_open / baseline.eye_open
-            )
-            down = (
-                down
-                or (pitch is not None and pitch >= cfg.relative_head_down_degrees)
-                or (
-                    opening is not None
-                    and pitch is not None
-                    and pitch >= cfg.eyelid_down_degrees
-                    and opening <= cfg.eyelid_down_open_ratio
-                )
-                or (opening is not None and opening <= cfg.eyes_only_down_open_ratio)
-            )
         if self._in_keyboard_zone(metrics):
             down, side = False, False
         return tuple(name for name, active in (("gaze_down", down), ("gaze_side", side)) if active)
-
-    def _reference(self) -> FaceMetrics:
-        return self._screen or self._auto_screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
-
-    def _learn_reference(self, measured: FaceMetrics, now: float) -> None:
-        """Take the first steady seconds facing the camera as the screen reference."""
-        if (
-            self._auto_baseline_seconds <= 0
-            or self._screen is not None
-            or self._auto_screen is not None
-            or measured.eye_open is None
-            or not is_calibration_sample_valid(measured, target="screen")
-        ):
-            return
-        self._auto_samples.append((now, measured))
-        if (
-            len(self._auto_samples) >= self.config.calibration_min_samples
-            and now - self._auto_samples[0][0] >= self._auto_baseline_seconds
-        ):
-            self._auto_screen = _median_metrics([sample for _, sample in self._auto_samples])
-            self._auto_samples.clear()
 
     def _down_thresholds(self) -> tuple[float, float]:
         cfg = self.config
@@ -899,7 +657,7 @@ class GazeAnalyzer:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         detection = self._face_mesh.process(rgb)
-        faces = self._significant_faces(detection.multi_face_landmarks or [])
+        faces = detection.multi_face_landmarks or []
         count = len(faces)
         metrics = None
         face_width_ratio = None
@@ -919,7 +677,6 @@ class GazeAnalyzer:
                 self._iris_missing_since = None
                 signals = ()
             else:
-                self._learn_reference(measured, now)
                 self._history.append(measured)
                 metrics = _median_metrics(list(self._history))
                 fresh_signals = self._signals(measured)
@@ -956,96 +713,34 @@ class GazeAnalyzer:
         elapsed: dict[EventType, float] = {}
         for name, episode in self._episodes.items():
             if name not in signals:
-                if (
-                    name in GAZE_EVENT_TYPES
-                    and self._gaze_gap_seconds > 0
-                    and episode.last_seen is not None
-                    and now - episode.last_seen <= self._gaze_gap_seconds
-                ):
-                    # A brief dropout: keep the episode, but never emit on a
-                    # frame that does not itself show the signal.
-                    continue
-                episode.started_at, episode.emitted, episode.last_seen = None, False, None
+                episode.started_at, episode.emitted = None, False
                 continue
-            episode.last_seen = now
             if episode.started_at is None:
                 episode.started_at = now
             duration = now - episode.started_at
             elapsed[name] = duration
             if duration >= thresholds[name] and not episode.emitted and name not in deferred:
                 episode.emitted = True
-                if name == "gaze_down":
-                    # Already reported; the same seconds must not count twice.
-                    self._down_spans.clear()
-                events.append(
-                    self._event(name, now, episode.started_at, duration, count,
-                                face_width_ratio, metrics)
-                )
-        accumulated = self._accumulate_down("gaze_down" in signals, now)
-        down_episode = self._episodes["gaze_down"]
-        if (
-            accumulated is not None
-            and not down_episode.emitted
-            and "gaze_down" not in deferred
-        ):
-            started_at, total = accumulated
-            self._down_spans.clear()
-            # One report per look: the continuous timer stays quiet for this one.
-            down_episode.emitted = True
-            event = self._event(
-                "gaze_down", now, started_at, total, count, face_width_ratio, metrics
-            )
-            event["accumulated"] = True
-            event["window_seconds"] = self._down_window_seconds
-            events.append(event)
+                event: dict[str, Any] = {
+                    "type": name,
+                    "source": "gaze",
+                    "timestamp": now,
+                    "started_at": episode.started_at,
+                    "duration": duration,
+                    "face_count": count,
+                }
+                if face_width_ratio is not None:
+                    event["face_width_ratio"] = face_width_ratio
+                if metrics is not None:
+                    if metrics.head_pose is not None:
+                        event["head_pose"] = asdict(metrics.head_pose)
+                    event["iris_x"], event["iris_y"] = metrics.iris_x, metrics.iris_y
+                events.append(event)
         self.last_result = AnalysisResult(
             count, metrics, signals, events, elapsed, face_width_ratio
         )
         self._last_deferred_gaze = deferred
         return events
-
-    def _accumulate_down(self, looking_down: bool, now: float) -> tuple[float, float] | None:
-        """Credit this frame; return (first glance time, total) once over budget."""
-        previous, self._down_seen_at = self._down_seen_at, now if looking_down else None
-        if self._down_budget_seconds <= 0:
-            return None
-        while self._down_spans and now - self._down_spans[0][0] > self._down_window_seconds:
-            self._down_spans.popleft()
-        if not looking_down:
-            return None
-        if previous is not None and now > previous:
-            self._down_spans.append((now, now - previous))
-        total = sum(span for _, span in self._down_spans)
-        if total < self._down_budget_seconds:
-            return None
-        first_time, first_span = self._down_spans[0]
-        return first_time - first_span, total
-
-    @staticmethod
-    def _event(
-        name: str,
-        now: float,
-        started_at: float | None,
-        duration: float,
-        count: int,
-        face_width_ratio: float | None,
-        metrics: FaceMetrics | None,
-    ) -> dict[str, Any]:
-        event: dict[str, Any] = {
-            "type": name,
-            "source": "gaze",
-            "timestamp": now,
-            "started_at": started_at,
-            "duration": duration,
-            "face_count": count,
-        }
-        if face_width_ratio is not None:
-            event["face_width_ratio"] = face_width_ratio
-        if metrics is not None:
-            if metrics.head_pose is not None:
-                event["head_pose"] = asdict(metrics.head_pose)
-            event["iris_x"], event["iris_y"] = metrics.iris_x, metrics.iris_y
-        return event
 
     def close(self) -> None:
         if not self._closed:
@@ -1067,11 +762,21 @@ class GazeAnalyzer:
 _default_analyzer: GazeAnalyzer | None = None
 
 
+APP_CONFIG = AnalyzerConfig(
+    gaze_side_seconds=2.0,
+    gaze_down_seconds=3.0,
+    head_side_degrees=20.0,
+    iris_side_threshold=0.15,
+)
+
+
 def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     """Convenience API for a single stream. Use instances for multiple students."""
     global _default_analyzer
     if _default_analyzer is None:
-        _default_analyzer = build_application_analyzer()
+        # Demo settings: a look aside (second monitor, notes beside the screen)
+        # and a look down are reported sooner and from a smaller turn.
+        _default_analyzer = GazeAnalyzer(APP_CONFIG)
     return _default_analyzer.analyze(frame)
 
 

@@ -84,12 +84,24 @@ class CameraWorker(QObject):
                     self.finished.emit()
 
     def _run_camera(self) -> None:
+        """Capture and analyse in one loop, as in the 6 October version.
+
+        A separate analysis thread (added later) delivered frames to the
+        detectors irregularly on the team's laptops, and gaze and phone events
+        were missed. Here every analysis takes the frame just captured, at
+        ``analysis_fps``, exactly as when detection was verified on camera.
+        """
         if self._stop_event.is_set():
             return
         try:
             import cv2
         except ImportError:
             self.camera_status.emit(False, "Не установлен OpenCV")
+            return
+
+        for status in self.detectors.load():
+            self.module_status.emit(status)
+        if self._stop_event.is_set():
             return
 
         backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else 0
@@ -103,13 +115,16 @@ class CameraWorker(QObject):
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.camera_status.emit(True, "Камера активна")
 
-        analyzer = threading.Thread(target=self._run_analysis, name="camera-analysis")
-        analyzer.start()
-        self._analysis_thread = analyzer
+        analysis_interval = 1.0 / self.config.analysis_fps
         preview_interval = 1.0 / self.config.preview_fps
+        last_analysis = 0.0
         last_preview = 0.0
+        last_error: dict[str, float] = {}
         performance_started = time.monotonic()
         captured_frames = 0
+        analyzed_frames = 0
+        phone_time_total = 0.0
+        gaze_time_total = 0.0
 
         while not self._stop_event.is_set():
             ok, frame = capture.read()
@@ -119,11 +134,28 @@ class CameraWorker(QObject):
                 self.camera_status.emit(False, "Не удалось получить кадр")
                 break
             with self._frames:
-                # Replacing this reference never mutates a frame being analyzed.
                 self._latest_frame = frame
                 self._frame_number += 1
-                self._frames.notify_all()
             captured_frames += 1
+
+            now = time.monotonic()
+            if now - last_analysis >= analysis_interval:
+                events, errors = self.detectors.analyze(frame)
+                analyzed_frames += 1
+                phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
+                gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
+                for event in events:
+                    self.pipeline.submit(event, frame)
+                if not events:
+                    # A calm frame from the start of the test becomes the
+                    # control photo shown to the teacher next to the name.
+                    self.pipeline.offer_reference_frame(frame)
+                for message in errors:
+                    if now - last_error.get(message, float("-inf")) >= 5.0:
+                        self.analysis_error.emit(message)
+                        last_error[message] = now
+                last_analysis = now
+
             now = time.monotonic()
             if now - last_preview >= preview_interval:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -137,61 +169,15 @@ class CameraWorker(QObject):
                 if notify:
                     self.frame_ready.emit()
                 last_preview = now
+
             elapsed = now - performance_started
             if elapsed >= 5.0:
-                with self._frames:
-                    analyzed = self._analyzed_frames
-                    phone_ms = self._phone_time_total / max(1, analyzed)
-                    gaze_ms = self._gaze_time_total / max(1, analyzed)
-                    self._analyzed_frames = 0
-                    self._phone_time_total = self._gaze_time_total = 0.0
-                self.performance_ready.emit(captured_frames / elapsed,
-                                            analyzed / elapsed, phone_ms, gaze_ms)
+                self.performance_ready.emit(
+                    captured_frames / elapsed,
+                    analyzed_frames / elapsed,
+                    phone_time_total / max(1, analyzed_frames),
+                    gaze_time_total / max(1, analyzed_frames),
+                )
                 performance_started = now
-                captured_frames = 0
-
-    def _run_analysis(self) -> None:
-        try:
-            if self._stop_event.is_set():
-                return
-            for status in self.detectors.load():
-                self.module_status.emit(status)
-            interval = 1.0 / self.config.analysis_fps
-            next_analysis = 0.0
-            last_frame = 0
-            last_error: dict[str, float] = {}
-            while not self._stop_event.is_set():
-                with self._frames:
-                    while not self._stop_event.is_set():
-                        delay = next_analysis - time.monotonic()
-                        if self._frame_number != last_frame and delay <= 0:
-                            frame = self._latest_frame
-                            last_frame = self._frame_number
-                            break
-                        self._frames.wait(timeout=delay if delay > 0 else None)
-                    else:
-                        break
-                next_analysis = time.monotonic() + interval
-                events, errors = self.detectors.analyze(frame)
-                # Always submit the exact frame used by both detectors, even
-                # when capture has advanced or shutdown began during inference.
-                for event in events:
-                    self.pipeline.submit(event, frame)
-                if not events:
-                    # A calm frame from the start of the test becomes the
-                    # control photo shown to the teacher next to the name.
-                    self.pipeline.offer_reference_frame(frame)
-                now = time.monotonic()
-                for message in errors:
-                    if now - last_error.get(message, float("-inf")) >= 5.0:
-                        self.analysis_error.emit(message)
-                        last_error[message] = now
-                with self._frames:
-                    self._analyzed_frames += 1
-                    self._phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
-                    self._gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
-        except Exception as exc:
-            self.analysis_error.emit(f"{type(exc).__name__}: {exc}")
-            self.stop()
-        finally:
-            self.detectors.close()
+                captured_frames = analyzed_frames = 0
+                phone_time_total = gaze_time_total = 0.0

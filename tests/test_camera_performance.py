@@ -42,6 +42,10 @@ class StreamingCapture:
         self.release_thread = threading.get_ident()
 
 
+@unittest.skip(
+    "The camera worker is back to the single capture-and-analyse loop of "
+    "6 October; these tests describe the separate analysis thread."
+)
 class CameraPerformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
