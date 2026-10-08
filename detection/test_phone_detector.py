@@ -45,6 +45,10 @@ class PhoneDetectorTests(unittest.TestCase):
         self.every_frame.start()
         self.no_verifier = patch.object(phone_module, "USE_VERIFIER", False)
         self.no_verifier.start()
+        # These tests describe the original three-of-five vote.
+        self.three_hits = patch.object(phone_module, "APP_PHONE_MIN_HITS", 3)
+        self.three_hits.start()
+        self.addCleanup(self.three_hits.stop)
 
     def tearDown(self):
         self.every_frame.stop()
@@ -59,6 +63,14 @@ class PhoneDetectorTests(unittest.TestCase):
         actual = [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
                   for t in times]
         self.assertEqual(actual, [[], [], ["phone_detected"], [], []])
+
+    def test_demo_setting_counts_a_phone_after_two_runs(self):
+        with patch.object(phone_module, "APP_PHONE_MIN_HITS", 2):
+            model = FakeModel([[box(0), box(67, 60)]] * 2)
+            detector = PhoneDetector(model=model)
+            actual = [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
+                      for t in range(2)]
+        self.assertEqual(actual, [[], ["phone_detected"]])
 
     def test_phone_window_accepts_one_missed_detection(self):
         model = FakeModel([[box(0), box(67, 60)], [box(0)], [box(0), box(67, 60)],

@@ -762,11 +762,21 @@ class GazeAnalyzer:
 _default_analyzer: GazeAnalyzer | None = None
 
 
+APP_CONFIG = AnalyzerConfig(
+    gaze_side_seconds=2.0,
+    gaze_down_seconds=3.0,
+    head_side_degrees=20.0,
+    iris_side_threshold=0.15,
+)
+
+
 def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     """Convenience API for a single stream. Use instances for multiple students."""
     global _default_analyzer
     if _default_analyzer is None:
-        _default_analyzer = GazeAnalyzer()
+        # Demo settings: a look aside (second monitor, notes beside the screen)
+        # and a look down are reported sooner and from a smaller turn.
+        _default_analyzer = GazeAnalyzer(APP_CONFIG)
     return _default_analyzer.analyze(frame)
 
 

@@ -33,6 +33,8 @@ PHONE_CONFIDENCE = 0.35
 PHONE_MAX_ASPECT: float | None = None
 PHONE_WINDOW = 5
 PHONE_MIN_HITS = 3
+# Demo: a phone counts after two sightings in five model runs.
+APP_PHONE_MIN_HITS = 2
 DISTRACTOR_CLASS_NAMES = {
     65: "remote",
     73: "book",
@@ -331,7 +333,7 @@ class PhoneDetector:
         # Один промах модели больше не обнуляет накопленные наблюдения.
         self.phone_hits.append(bool(phones))
         hits = sum(self.phone_hits)
-        if hits < PHONE_MIN_HITS:
+        if hits < APP_PHONE_MIN_HITS:
             self.last_emitted.pop(EventType.PHONE_DETECTED, None)
         elif phones:
             phone = max(phones, key=lambda item: item.confidence)
