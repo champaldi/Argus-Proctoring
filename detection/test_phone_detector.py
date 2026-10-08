@@ -407,5 +407,40 @@ class InstantPhoneTests(unittest.TestCase):
         self.assertEqual(actual, [["phone_detected"]])
 
 
+class ClassicProfileTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(phone_module, "USE_VERIFIER", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_calls(self, model_frames, calls):
+        """``model_frames`` feed the model runs; YOLO runs on every second call."""
+        detector = PhoneDetector(
+            model=FakeModel(model_frames), settings=phone_module.CLASSIC_PHONE_SETTINGS
+        )
+        return [[event.type.value for event in detector.detect(FRAME, timestamp=t)]
+                for t in range(calls)]
+
+    def test_two_sightings_in_five_runs_are_enough(self):
+        phone = [box(0), box(67, 60, 0.9)]
+        actual = self.run_calls([phone, phone], 4)
+        self.assertEqual(actual, [[], [], ["phone_detected"], []])
+
+    def test_one_missed_run_between_sightings_is_tolerated(self):
+        phone, empty = [box(0), box(67, 60, 0.9)], [box(0)]
+        actual = self.run_calls([phone, empty, phone], 5)
+        self.assertEqual(actual, [[], [], [], [], ["phone_detected"]])
+
+    def test_confident_phone_does_not_fire_on_the_first_run(self):
+        actual = self.run_calls([[box(0), box(67, 60, 0.95)]], 1)
+        self.assertEqual(actual, [[]])
+
+    def test_profile_defaults_to_classic(self):
+        with patch.dict("os.environ", {phone_module.DETECTION_PROFILE_ENV: ""}):
+            self.assertEqual(phone_module.detection_profile(), "classic")
+        with patch.dict("os.environ", {phone_module.DETECTION_PROFILE_ENV: "adaptive"}):
+            self.assertEqual(phone_module.detection_profile(), "adaptive")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,6 +65,45 @@ DEFAULT_GAZE_DOWN_SECONDS = 4.0
 # gaps between frames and longer single-frame dropouts.
 DEFAULT_MAX_SAMPLE_GAP_SECONDS = 3.0
 DEFAULT_APP_GAZE_GAP_SECONDS = 1.5
+# Profile of the application's analyzer (PROCTOR_DETECTION_PROFILE).
+# "classic": the behaviour of 6 October (fixed straight-ahead reference, head
+# and iris thresholds), faster: 2 s aside, 3 s down. Tolerance to slow frames
+# and the background-face filter stay. "adaptive": the learned reference,
+# eyelids and the per-minute total.
+DETECTION_PROFILE_ENV = "PROCTOR_DETECTION_PROFILE"
+CLASSIC_GAZE_SIDE_SECONDS = 2.0
+CLASSIC_GAZE_DOWN_SECONDS = 3.0
+
+
+def detection_profile() -> str:
+    value = os.getenv(DETECTION_PROFILE_ENV, "classic").strip().lower()
+    return "adaptive" if value == "adaptive" else "classic"
+
+
+def build_application_analyzer(**overrides: Any) -> "GazeAnalyzer":
+    """The analyzer gaze.analyze() uses, for the profile chosen by environment."""
+    if detection_profile() == "classic":
+        return GazeAnalyzer(
+            AnalyzerConfig(
+                gaze_side_seconds=CLASSIC_GAZE_SIDE_SECONDS,
+                gaze_down_seconds=CLASSIC_GAZE_DOWN_SECONDS,
+                max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
+            ),
+            gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
+            min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+            **overrides,
+        )
+    return GazeAnalyzer(
+        AnalyzerConfig(
+            gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS,
+            max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
+        ),
+        gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
+        min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
+        down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
+        auto_baseline_seconds=DEFAULT_AUTO_BASELINE_SECONDS,
+        **overrides,
+    )
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -1032,16 +1071,7 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     """Convenience API for a single stream. Use instances for multiple students."""
     global _default_analyzer
     if _default_analyzer is None:
-        _default_analyzer = GazeAnalyzer(
-            AnalyzerConfig(
-                gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS,
-                max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
-            ),
-            gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
-            min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
-            down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
-            auto_baseline_seconds=DEFAULT_AUTO_BASELINE_SECONDS,
-        )
+        _default_analyzer = build_application_analyzer()
     return _default_analyzer.analyze(frame)
 
 

@@ -70,6 +70,20 @@ ENABLE_NO_PERSON = False
 # показанный на секунду, мог не попасть ни в один.
 DETECT_EVERY_N_FRAMES = 2
 MODEL_NAME = "yolov8s.pt"
+# Профиль детекции в приложении. "classic" — поведение версии 6 октября
+# (три кадра из пяти, без мгновенного срабатывания), но быстрее: два кадра из
+# пяти и YOLO на каждом втором вызове. "adaptive" — мгновенный уверенный телефон.
+DETECTION_PROFILE_ENV = "PROCTOR_DETECTION_PROFILE"
+CLASSIC_PHONE_SETTINGS = {
+    "min_hits": 2,
+    "every_n": 2,
+    "instant": False,
+}
+
+
+def detection_profile() -> str:
+    value = os.getenv(DETECTION_PROFILE_ENV, "classic").strip().lower()
+    return "adaptive" if value == "adaptive" else "classic"
 _verifier_warning_printed = False
 
 
@@ -217,7 +231,9 @@ def analyze_frame(
 class PhoneDetector:
     """Хранит счётчики и таймеры для одного потока камеры."""
 
-    def __init__(self, *, model: Any = None) -> None:
+    def __init__(self, *, model: Any = None, settings: dict[str, Any] | None = None) -> None:
+        # Без settings детектор читает модульные константы, как раньше.
+        self._settings = dict(settings or {})
         if model is None:
             model = load_model()
         self.model = model
@@ -339,7 +355,8 @@ class PhoneDetector:
         # На пропущенном кадре сохраняем наблюдения и начало таймеров.
         # События появятся при следующем кадре, обработанном YOLO.
         next_frame = self.frames_seen + 1
-        if (next_frame - 1) % DETECT_EVERY_N_FRAMES != 0:
+        every_n = self._settings.get("every_n", DETECT_EVERY_N_FRAMES)
+        if (next_frame - 1) % every_n != 0:
             self.frames_seen = next_frame
             self.last_timestamp = now
             return []
@@ -374,7 +391,7 @@ class PhoneDetector:
         hits = sum(self.phone_hits)
         best = max(phones, key=lambda item: item.confidence) if phones else None
         self.phone_missing_runs = 0 if phones else self.phone_missing_runs + 1
-        if best is not None and (
+        if best is not None and self._settings.get("instant", True) and (
             best.confidence >= PHONE_INSTANT_CONFIDENCE
             or (
                 best.verifier_score is not None
@@ -389,7 +406,7 @@ class PhoneDetector:
             self.instant_episode = False
             self.phone_hits.clear()
             hits = 0
-        if hits < PHONE_MIN_HITS and not self.instant_episode:
+        if hits < self._settings.get("min_hits", PHONE_MIN_HITS) and not self.instant_episode:
             self.last_emitted.pop(EventType.PHONE_DETECTED, None)
         elif best is not None:
             phone = best
@@ -461,7 +478,9 @@ def detect(frame: np.ndarray) -> list[ProctorEvent]:
     """Точка входа, которую вызывает core.detectors.DetectorAdapter."""
     global _default_detector
     if _default_detector is None:
-        _default_detector = PhoneDetector()
+        _default_detector = PhoneDetector(
+            settings=CLASSIC_PHONE_SETTINGS if detection_profile() == "classic" else None
+        )
     return _default_detector.detect(frame)
 
 

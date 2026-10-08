@@ -186,6 +186,7 @@ class BackgroundFaceTests(Base):
 
 
 class ConvenienceAnalyzerTests(unittest.TestCase):
+    @patch.dict("os.environ", {"PROCTOR_DETECTION_PROFILE": "adaptive"})
     def test_application_entry_point_uses_the_tolerant_settings(self):
         created = {}
 

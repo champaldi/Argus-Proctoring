@@ -116,6 +116,7 @@ class StrictAnalyzerTests(Base):
             with self.assertRaises(ValueError):
                 GazeAnalyzer(face_mesh=self.mesh, **kwargs)
 
+    @patch.dict("os.environ", {"PROCTOR_DETECTION_PROFILE": "adaptive"})
     def test_convenience_analyzer_enables_the_budget(self):
         from gaze import analyzer as module
 
