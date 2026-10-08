@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" role="img" aria-label="Argus — локальный прокторинг">
+  <rect width="1280" height="320" rx="28" fill="#172554"/>
+  <g transform="translate(96 88) scale(0.5625)">
+    <rect width="256" height="256" rx="56" fill="#1E3A8A"/>
+    <path d="M36 128C62 86 94 66 128 66s66 20 92 62c-26 42-58 62-92 62s-66-20-92-62Z" fill="none" stroke="#F8F9FA" stroke-width="14" stroke-linejoin="round"/>
+    <circle cx="128" cy="128" r="36" fill="#F8F9FA"/>
+    <circle cx="128" cy="128" r="15" fill="#1E3A8A"/>
+    <circle cx="141" cy="115" r="6" fill="#10B981"/>
+  </g>
+  <text x="288" y="150" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="84" font-weight="700" fill="#F8F9FA">Argus</text>
+  <text x="290" y="204" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" fill="#D5DCEC">Локальный прокторинг: телефон, взгляд и защита окружения</text>
+  <text x="290" y="246" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" fill="#9DB7FF">Qostanai AI Industry Hackathon 2026 · кейс 3 · команда F5</text>
+</svg>
