@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -80,3 +81,222 @@ class WindowsBackendTests(unittest.TestCase):
             remove = backend.install_hook(lambda event: True)
             remove()
         self.assertEqual(registrations, [unrelated])
+
+    def test_window_lock_sets_topmost_maximizes_and_unlock_clears_it(self):
+        gui = Mock()
+        gui.GetWindowRect.return_value = (100, 100, 900, 700)
+        gui.IsWindow.return_value = True
+        api = Mock()
+        api.GetMonitorInfo.return_value = {"Monitor": (0, 0, 1920, 1080)}
+        user32 = Mock()
+        con = self.backend.con
+        with (
+            patch.object(self.backend, "gui", gui),
+            patch.object(self.backend, "api", api),
+            patch.object(self.backend, "user32", user32),
+        ):
+            self.assertTrue(self.backend.lock_window(100))
+            self.assertTrue(self.backend.unlock_window(100))
+
+        first, second = gui.SetWindowPos.call_args_list
+        self.assertEqual(first.args[:2], (100, con.HWND_TOPMOST))
+        self.assertEqual(second.args[:2], (100, con.HWND_NOTOPMOST))
+        user32.ShowWindowAsync.assert_called_once_with(100, con.SW_MAXIMIZE)
+
+    def test_window_lock_keeps_an_already_full_screen_window_as_is(self):
+        gui = Mock()
+        gui.GetWindowRect.return_value = (0, 0, 1920, 1080)
+        api = Mock()
+        api.GetMonitorInfo.return_value = {"Monitor": (0, 0, 1920, 1080)}
+        user32 = Mock()
+        with (
+            patch.object(self.backend, "gui", gui),
+            patch.object(self.backend, "api", api),
+            patch.object(self.backend, "user32", user32),
+        ):
+            self.assertTrue(self.backend.lock_window(100))
+        user32.ShowWindowAsync.assert_not_called()
+
+    def test_window_lock_failure_is_reported_as_false(self):
+        gui = Mock()
+        gui.SetWindowPos.side_effect = RuntimeError("denied")
+        with (patch.object(self.backend, "gui", gui),
+              patch.object(self.backend, "_covers_monitor", return_value=True)):
+            self.assertFalse(self.backend.lock_window(100))
+        gui.SetWindowPos.assert_called_once()
+
+    def test_window_geometry_failure_does_not_leave_topmost_set(self):
+        gui = Mock()
+        gui.GetWindowRect.side_effect = RuntimeError("window disappeared")
+        with patch.object(self.backend, "gui", gui):
+            self.assertFalse(self.backend.lock_window(100))
+        gui.SetWindowPos.assert_not_called()
+
+    def test_failed_maximize_does_not_report_a_successful_window_lock(self):
+        user32 = Mock()
+        user32.ShowWindowAsync.return_value = 0
+        with (patch.object(self.backend, "_covers_monitor", return_value=False),
+              patch.object(self.backend, "gui") as gui,
+              patch.object(self.backend, "user32", user32)):
+            self.assertFalse(self.backend.lock_window(100))
+            gui.SetWindowPos.assert_not_called()
+
+    def test_async_maximize_uses_pointer_sized_window_handle(self):
+        from ctypes import wintypes
+        user32 = Mock()
+        hwnd = 0x123456789
+        with (patch.object(self.backend, "_covers_monitor", return_value=False),
+              patch.object(self.backend, "gui"),
+              patch.object(self.backend, "user32", user32)):
+            self.assertTrue(self.backend.lock_window(hwnd))
+        function = user32.ShowWindowAsync
+        self.assertEqual(function.argtypes, (wintypes.HWND, wintypes.INT))
+        self.assertEqual(function.restype, wintypes.BOOL)
+        function.assert_called_once_with(hwnd, self.backend.con.SW_MAXIMIZE)
+
+    def test_clipboard_is_opened_emptied_and_always_closed(self):
+        clipboard = Mock()
+        with patch.dict(sys.modules, {"win32clipboard": clipboard}):
+            self.assertTrue(self.backend.clear_clipboard())
+            clipboard.EmptyClipboard.side_effect = RuntimeError("busy")
+            self.assertFalse(self.backend.clear_clipboard())
+        self.assertEqual(clipboard.OpenClipboard.call_count, 2)
+        self.assertEqual(clipboard.CloseClipboard.call_count, 2)
+
+    def test_capture_affinity_uses_exclusion_and_restores_normal_rendering(self):
+        user32 = Mock()
+        user32.SetWindowDisplayAffinity.return_value = 1
+        self.backend.user32 = user32
+
+        self.assertTrue(self.backend.protect_capture(100))
+        self.assertTrue(self.backend.release_capture(100))
+
+        self.assertEqual(
+            [call.args for call in user32.SetWindowDisplayAffinity.call_args_list],
+            [(100, 0x11), (100, 0x00)],
+        )
+
+    def test_service_snapshot_returns_complete_windows_service_identity(self):
+        services = [
+            SimpleNamespace(
+                as_dict=lambda: {
+                    "name": "TeamViewer",
+                    "display_name": "TeamViewer Remote",
+                    "status": "running",
+                }
+            )
+        ]
+        self.backend.psutil.win_service_iter = Mock(return_value=services)
+
+        self.assertEqual(
+            self.backend.services(),
+            [
+                {
+                    "name": "TeamViewer",
+                    "display_name": "TeamViewer Remote",
+                    "status": "running",
+                }
+            ],
+        )
+
+    def test_remote_session_uses_windows_remote_session_metric(self):
+        self.backend.user32 = Mock()
+        self.backend.user32.GetSystemMetrics.return_value = 1
+
+        self.assertTrue(self.backend.is_remote_session())
+        self.backend.user32.GetSystemMetrics.assert_called_once_with(0x1000)
+
+    def test_monitor_count_uses_windows_display_monitor_metric(self):
+        self.backend.user32 = Mock()
+        self.backend.user32.GetSystemMetrics.return_value = 2
+
+        self.assertEqual(self.backend.monitor_count(), 2)
+        self.backend.user32.GetSystemMetrics.assert_called_once_with(80)
+
+    def test_injected_keyboard_flags_and_actions_are_decoded(self):
+        from environment_protection.windows import decode_keyboard_input
+
+        self.assertEqual(
+            decode_keyboard_input(0x0100, 65, 30, 0x12),
+            {
+                "device": "keyboard",
+                "action": "key_down",
+                "injected": True,
+                "lower_integrity": True,
+                "vk_code": 65,
+                "scan_code": 30,
+            },
+        )
+        self.assertIsNone(decode_keyboard_input(0x0101, 65, 30, 0x00))
+
+    def test_injected_mouse_flags_and_actions_are_decoded(self):
+        from environment_protection.windows import decode_mouse_input
+
+        self.assertEqual(
+            decode_mouse_input(0x0200, 120, 80, 0, 0x03),
+            {
+                "device": "mouse",
+                "action": "move",
+                "injected": True,
+                "lower_integrity": True,
+                "x": 120,
+                "y": 80,
+                "mouse_data": 0,
+            },
+        )
+        self.assertIsNone(decode_mouse_input(0x0201, 120, 80, 0, 0x00))
+
+    def test_input_monitor_is_started_and_its_cleanup_is_returned(self):
+        monitor = Mock()
+        self.backend.input_monitor_factory = Mock(return_value=monitor)
+        callback = Mock()
+
+        remove = self.backend.install_input_monitor(callback)
+        remove()
+
+        self.backend.input_monitor_factory.assert_called_once_with(
+            self.backend.user32,
+            self.backend.kernel32,
+            callback,
+        )
+        monitor.start.assert_called_once_with()
+        monitor.stop.assert_called_once_with()
+
+    def test_real_low_level_input_monitor_starts_and_stops_without_blocking(self):
+        remove = self.backend.install_input_monitor(lambda details: None)
+        try:
+            self.assertTrue(callable(remove))
+        finally:
+            remove()
+
+    def test_input_monitor_startup_timeout_stops_its_worker(self):
+        from environment_protection.input_hooks import LowLevelInputMonitor
+
+        monitor = LowLevelInputMonitor(Mock(), Mock(), lambda event: None)
+        entered = threading.Event()
+
+        def delayed_run():
+            entered.set()
+            monitor._stop_requested.wait(2)
+
+        self.backend.input_monitor_factory = lambda *args: monitor
+        with (
+            patch.object(monitor, "_run", delayed_run),
+            patch.object(monitor._ready, "wait", return_value=False),
+        ):
+            try:
+                with self.assertRaises(TimeoutError):
+                    self.backend.install_input_monitor(lambda details: None)
+                self.assertTrue(entered.wait(1))
+                self.assertTrue(monitor._stop_requested.is_set())
+                self.assertFalse(monitor._thread.is_alive())
+            finally:
+                monitor.stop()
+
+    def test_input_monitor_cleanup_failure_keeps_original_startup_error(self):
+        monitor = Mock()
+        monitor.start.side_effect = TimeoutError("startup timed out")
+        monitor.stop.side_effect = RuntimeError("cleanup timed out")
+        self.backend.input_monitor_factory = lambda *args: monitor
+        with self.assertRaisesRegex(TimeoutError, "startup timed out"):
+            self.backend.install_input_monitor(lambda details: None)

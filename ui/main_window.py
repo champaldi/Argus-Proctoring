@@ -50,6 +50,10 @@ EVENT_LABELS = {
     "hotkey_blocked": "Заблокирована комбинация клавиш",
     "window_switched": "Переключение окна",
     "suspicious_process": "Обнаружен запрещённый процесс",
+    "capture_protection_failed": "Не удалось скрыть окно от захвата",
+    "remote_session": "Тест запущен через удалённую сессию",
+    "multiple_monitors": "Подключено несколько мониторов",
+    "injected_input": "Ввод не с физических устройств",
 }
 
 

@@ -19,10 +19,23 @@ class FakeDesktop:
         self.restore_succeeds = True
         self.restores = []
         self.hook = None
+        self.input_monitor = None
         self.process_list = []
+        self.service_list = []
         self.fail_install = False
         self.fail_remove = False
         self.modifiers = set()
+        self.capture_succeeds = True
+        self.capture_release_succeeds = True
+        self.capture_calls = []
+        self.lock_succeeds = True
+        self.unlock_succeeds = True
+        self.lock_calls = []
+        self.clipboard_clears = 0
+        self.fail_clipboard = False
+        self.remote_session = False
+        self.monitor_count_value = 1
+        self.fail_input_remove = False
 
     def resolve_target(self, hwnd):
         return (hwnd or 100), 10
@@ -30,11 +43,48 @@ class FakeDesktop:
     def initial_modifiers(self):
         return self.modifiers
 
+    def protect_capture(self, hwnd):
+        self.capture_calls.append(("protect", hwnd))
+        return self.capture_succeeds
+
+    def release_capture(self, hwnd):
+        self.capture_calls.append(("release", hwnd))
+        return self.capture_release_succeeds
+
+    def lock_window(self, hwnd):
+        self.lock_calls.append(("lock", hwnd))
+        return self.lock_succeeds
+
+    def unlock_window(self, hwnd):
+        self.lock_calls.append(("unlock", hwnd))
+        return self.unlock_succeeds
+
+    def clear_clipboard(self):
+        self.clipboard_clears += 1
+        if self.fail_clipboard:
+            raise RuntimeError("clipboard is busy")
+        return True
+
+    def is_remote_session(self):
+        return self.remote_session
+
+    def monitor_count(self):
+        return self.monitor_count_value
+
     def install_hook(self, callback):
         if self.fail_install:
             raise RuntimeError("hook installation failed")
         self.hook = callback
         return self.remove_hook
+
+    def install_input_monitor(self, callback):
+        self.input_monitor = callback
+        return self.remove_input_monitor
+
+    def remove_input_monitor(self):
+        if self.fail_input_remove:
+            raise RuntimeError("input monitor removal failed")
+        self.input_monitor = None
 
     def remove_hook(self):
         if self.fail_remove:
@@ -59,6 +109,9 @@ class FakeDesktop:
     def processes(self):
         return list(self.process_list)
 
+    def services(self):
+        return list(self.service_list)
+
 
 def key(name, scan_code, kind="down"):
     return SimpleNamespace(name=name, scan_code=scan_code, event_type=kind)
@@ -79,7 +132,12 @@ class ProtectionTests(unittest.TestCase):
         self.events = []
         self.protection = Protection(
             self.desktop,
-            ProtectionConfig(poll_interval=0.01, process_interval=0.02, max_seconds=5),
+            ProtectionConfig(
+                poll_interval=0.01,
+                process_interval=0.02,
+                max_seconds=5,
+                injected_input_idle_seconds=0.04,
+            ),
         )
         self.addCleanup(self.protection.disable)
 
@@ -143,6 +201,198 @@ class ProtectionTests(unittest.TestCase):
         self.assertIsNone(self.desktop.hook)
         self.assertTrue(hook(key("left windows", 91)))
         self.assertFalse(self.protection.status()["enabled"])
+
+    def test_capture_protection_is_applied_and_released_once(self):
+        self.start()
+        self.assertTrue(self.protection.status()["capture_protected"])
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(
+            self.desktop.capture_calls,
+            [("protect", 100), ("release", 100)],
+        )
+        self.assertFalse(self.protection.status()["capture_protected"])
+
+    def test_test_window_is_pinned_on_top_and_released_once(self):
+        self.start()
+        self.assertTrue(self.protection.status()["window_locked"])
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(self.desktop.lock_calls, [("lock", 100), ("unlock", 100)])
+        self.assertFalse(self.protection.status()["window_locked"])
+
+    def test_failed_window_pin_does_not_prevent_protection(self):
+        self.desktop.lock_succeeds = False
+        self.start()
+        status = self.protection.status()
+        self.assertTrue(status["enabled"])
+        self.assertFalse(status["window_locked"])
+        self.protection.disable()
+        self.assertEqual(self.desktop.lock_calls, [("lock", 100)])
+
+    def test_emergency_hotkey_releases_window_pin(self):
+        hook = self.start()
+        hook(key("ctrl", 29))
+        hook(key("alt", 56))
+        hook(key("f12", 88))
+        self.assertTrue(wait_for(lambda: ("unlock", 100) in self.desktop.lock_calls))
+
+    def test_combinations_that_close_or_leave_the_test_are_blocked(self):
+        hook = self.start()
+        cases = [
+            (("alt", 56),), "f4", 62, "alt+f4",
+            (("alt", 56),), "esc", 1, "alt+esc",
+            (("alt", 56),), "space", 57, "alt+space",
+            (("ctrl", 29),), "esc", 1, "ctrl+esc",
+            (("ctrl", 29), ("shift", 42)), "esc", 1, "ctrl+shift+esc",
+            (("ctrl", 29),), "ч", 45, "ctrl+x",
+        ]
+        expected = []
+        for index in range(0, len(cases), 4):
+            modifiers, name, scan, label = cases[index:index + 4]
+            for modifier, modifier_scan in modifiers:
+                self.assertTrue(hook(key(modifier, modifier_scan)))
+            self.assertFalse(hook(key(name, scan)), label)
+            self.assertFalse(hook(key(name, scan, "up")), label)
+            for modifier, modifier_scan in modifiers:
+                self.assertTrue(hook(key(modifier, modifier_scan, "up")))
+            expected.append(label)
+        self.assertTrue(wait_for(lambda: len(self.events) == len(expected)))
+        self.assertEqual([item["details"]["hotkey"] for item in self.events], expected)
+
+    def test_plain_escape_and_f4_are_not_blocked(self):
+        hook = self.start()
+        self.assertTrue(hook(key("esc", 1)))
+        self.assertTrue(hook(key("f4", 62)))
+        self.assertTrue(hook(key("space", 57)))
+        self.assertEqual(self.events, [])
+
+    def test_clipboard_is_emptied_at_start_and_once_at_the_end(self):
+        self.start()
+        self.assertEqual(self.desktop.clipboard_clears, 1)
+        self.protection.disable()
+        self.protection.disable()
+        self.assertEqual(self.desktop.clipboard_clears, 2)
+
+    def test_busy_clipboard_does_not_stop_protection(self):
+        self.desktop.fail_clipboard = True
+        self.start()
+        self.assertTrue(self.protection.status()["enabled"])
+        self.protection.disable()
+        self.assertIsNone(self.desktop.hook)
+
+    def test_capture_protection_can_be_switched_off_for_demo_recording(self):
+        from environment_protection.controller import Protection, ProtectionConfig
+
+        protection = Protection(self.desktop, ProtectionConfig(protect_capture=False))
+        protection.enable(self.events.append)
+        try:
+            self.assertFalse(protection.status()["capture_protected"])
+            self.assertEqual(self.desktop.capture_calls, [])
+            self.assertEqual(self.events, [])
+        finally:
+            protection.disable()
+        self.assertEqual(self.desktop.capture_calls, [])
+
+    def test_capture_protection_failure_is_reported_without_locking_desktop(self):
+        self.desktop.capture_succeeds = False
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual(self.events[0]["type"], "capture_protection_failed")
+        self.assertEqual(self.events[0]["details"], {"target_hwnd": 100})
+        self.assertFalse(self.protection.status()["capture_protected"])
+
+    def test_remote_windows_session_is_reported_once_at_start(self):
+        self.desktop.remote_session = True
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual([event["type"] for event in self.events], ["remote_session"])
+        self.assertEqual(self.events[0]["details"], {"protocol": "rdp"})
+
+    def test_multiple_monitors_emit_once_per_continuous_episode(self):
+        self.desktop.monitor_count_value = 2
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.events) == 1))
+        self.assertEqual(self.events[0]["type"], "multiple_monitors")
+        self.assertEqual(self.events[0]["details"], {"monitor_count": 2})
+        time.sleep(0.05)
+        self.assertEqual(len(self.events), 1)
+        self.desktop.monitor_count_value = 1
+        self.assertTrue(wait_for(lambda: self.protection.status()["monitor_count"] == 1))
+        self.desktop.monitor_count_value = 3
+        self.assertTrue(wait_for(lambda: len(self.events) == 2))
+        self.assertEqual(self.events[1]["details"], {"monitor_count": 3})
+
+    def test_injected_mouse_and_keyboard_input_emit_episodes_but_physical_input_does_not(self):
+        self.start()
+        monitor = self.desktop.input_monitor
+        monitor({"device": "mouse", "action": "move", "injected": False})
+        time.sleep(0.02)
+        self.assertEqual(self.events, [])
+
+        first = {
+            "device": "mouse",
+            "action": "move",
+            "injected": True,
+            "lower_integrity": False,
+        }
+        monitor(first)
+        monitor({**first, "action": "left_down"})
+        self.assertTrue(wait_for(lambda: len(self.events) == 1))
+        self.assertEqual(self.events[0]["type"], "injected_input")
+        self.assertEqual(self.events[0]["details"], first)
+
+        time.sleep(0.06)
+        keyboard = {
+            "device": "keyboard",
+            "action": "key_down",
+            "injected": True,
+            "lower_integrity": True,
+            "vk_code": 65,
+            "scan_code": 30,
+        }
+        monitor(keyboard)
+        self.assertTrue(wait_for(lambda: len(self.events) == 2))
+        self.assertEqual(self.events[1]["details"], keyboard)
+
+    def test_disable_removes_injected_input_monitor(self):
+        self.start()
+        self.assertIsNotNone(self.desktop.input_monitor)
+        self.protection.disable()
+        self.assertIsNone(self.desktop.input_monitor)
+
+    def test_restart_is_refused_until_input_monitor_cleanup_succeeds(self):
+        self.start()
+        self.desktop.fail_input_remove = True
+        self.protection.disable()
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.desktop.fail_input_remove = False
+        self.protection.disable()
+        self.start()
+
+    def test_restart_is_refused_until_capture_protection_is_released(self):
+        self.start()
+        self.desktop.capture_release_succeeds = False
+        self.protection.disable()
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.desktop.capture_release_succeeds = True
+        self.protection.disable()
+        self.start()
+
+    def test_restart_is_refused_until_window_is_unpinned(self):
+        self.start()
+        self.desktop.unlock_succeeds = False
+        self.protection.disable()
+        self.assertTrue(self.protection.status()["window_locked"])
+        with self.assertRaisesRegex(RuntimeError, "still shutting down"):
+            self.start()
+        self.assertIn("window", self.protection.status()["last_error"])
+        self.desktop.unlock_succeeds = True
+        self.protection.disable()
+        self.assertFalse(self.protection.status()["window_locked"])
+        self.start()
 
     def test_emergency_shortcut_releases_keyboard_even_with_stuck_callback(self):
         entered, release = threading.Event(), threading.Event()
@@ -308,6 +558,41 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(all(e["type"] == "suspicious_process" for e in self.events))
         self.desktop.process_list[-1]["create_time"] = 4  # PID reuse is a new process.
         self.assertTrue(wait_for(lambda: len(self.events) == 2))
+
+    def test_remote_access_process_families_are_reported(self):
+        names = [
+            "AnyDesk.exe",
+            "rustdesk.exe",
+            "parsecd.exe",
+            "TeamViewer.exe",
+            "winvnc.exe",
+            "remoting_host.exe",
+            "QuickAssist.exe",
+        ]
+        self.desktop.process_list = [
+            {"pid": 20 + index, "ppid": 1, "name": name, "create_time": index}
+            for index, name in enumerate(names)
+        ]
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        reported = {item["name"].casefold() for item in self.events[0]["details"]["processes"]}
+        self.assertEqual(reported, {name.casefold() for name in names})
+
+    def test_remote_access_services_share_one_software_event_with_processes(self):
+        self.desktop.process_list = [
+            {"pid": 20, "ppid": 1, "name": "AnyDesk.exe", "create_time": 1}
+        ]
+        self.desktop.service_list = [
+            {"name": "TeamViewer", "display_name": "TeamViewer", "status": "running"},
+            {"name": "chromoting", "display_name": "Chrome Remote Desktop", "status": "running"},
+            {"name": "RustDesk", "display_name": "RustDesk Service", "status": "stopped"},
+        ]
+        self.start()
+        self.assertTrue(wait_for(lambda: bool(self.events)))
+        self.assertEqual(len(self.events), 1)
+        details = self.events[0]["details"]
+        self.assertEqual({item["name"] for item in details["services"]}, {"TeamViewer", "chromoting"})
+        self.assertEqual(details["count"], 3)
 
     def test_events_pass_existing_adapter_and_sqlite_pipeline(self):
         import tempfile
