@@ -58,6 +58,13 @@ DEFAULT_AUTO_BASELINE_SECONDS = 3.0
 # Five seconds let a student read a phone on the keyboard and look back up in
 # time. The application reports a continuous look down sooner.
 DEFAULT_GAZE_DOWN_SECONDS = 4.0
+# In the application the gaze module shares the processor with YOLO and CLIP,
+# and with a screen recorder on top frames reach it less than once a second.
+# A strict one-second limit then reset every timer and the learned reference
+# before any look could last four seconds. The application tolerates longer
+# gaps between frames and longer single-frame dropouts.
+DEFAULT_MAX_SAMPLE_GAP_SECONDS = 3.0
+DEFAULT_APP_GAZE_GAP_SECONDS = 1.5
 # Face Mesh's face oval excludes iris and interior points. Its horizontal
 # extremes give the visible face width, including when the head is tilted.
 FACE_CONTOUR_IDS = (
@@ -1026,8 +1033,11 @@ def analyze(frame: np.ndarray) -> list[dict[str, Any]]:
     global _default_analyzer
     if _default_analyzer is None:
         _default_analyzer = GazeAnalyzer(
-            AnalyzerConfig(gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS),
-            gaze_gap_seconds=DEFAULT_GAZE_GAP_SECONDS,
+            AnalyzerConfig(
+                gaze_down_seconds=DEFAULT_GAZE_DOWN_SECONDS,
+                max_sample_gap_seconds=DEFAULT_MAX_SAMPLE_GAP_SECONDS,
+            ),
+            gaze_gap_seconds=DEFAULT_APP_GAZE_GAP_SECONDS,
             min_extra_face_ratio=DEFAULT_MIN_EXTRA_FACE_RATIO,
             down_budget_seconds=DEFAULT_DOWN_BUDGET_SECONDS,
             auto_baseline_seconds=DEFAULT_AUTO_BASELINE_SECONDS,

@@ -191,7 +191,11 @@ class ConvenienceAnalyzerTests(unittest.TestCase):
 
         class Recorder:
             def __init__(self, config, **kwargs):
-                created.update(kwargs, gaze_down_seconds=config.gaze_down_seconds)
+                created.update(
+                    kwargs,
+                    gaze_down_seconds=config.gaze_down_seconds,
+                    max_sample_gap_seconds=config.max_sample_gap_seconds,
+                )
 
             def analyze(self, frame):
                 return []
@@ -208,7 +212,8 @@ class ConvenienceAnalyzerTests(unittest.TestCase):
         self.assertEqual(
             created,
             {
-                "gaze_gap_seconds": DEFAULT_GAZE_GAP_SECONDS,
+                "gaze_gap_seconds": gaze_analyzer.DEFAULT_APP_GAZE_GAP_SECONDS,
+                "max_sample_gap_seconds": gaze_analyzer.DEFAULT_MAX_SAMPLE_GAP_SECONDS,
                 "min_extra_face_ratio": DEFAULT_MIN_EXTRA_FACE_RATIO,
                 "down_budget_seconds": gaze_analyzer.DEFAULT_DOWN_BUDGET_SECONDS,
                 "auto_baseline_seconds": gaze_analyzer.DEFAULT_AUTO_BASELINE_SECONDS,
