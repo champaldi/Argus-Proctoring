@@ -27,6 +27,19 @@ RISK_WEIGHTS: dict[str, float] = {
     "multiple_monitors": 20.0,
     "injected_input": 15.0,
 }
+# Each minor signal type adds at most this much per session.
+RISK_TYPE_CAPS: dict[str, float] = {
+    "gaze_side": 30.0,
+    "gaze_down": 30.0,
+    "no_face": 40.0,
+    "too_close_to_camera": 20.0,
+    "window_switched": 30.0,
+    "hotkey_blocked": 30.0,
+    "suspicious_process": 30.0,
+    "capture_protection_failed": 15.0,
+    "multiple_monitors": 20.0,
+    "injected_input": 30.0,
+}
 RISK_COMBINATION_WINDOW_SECONDS = 10.0
 RISK_COMBINATION_MULTIPLIER = 1.5
 RISK_DECAY_PER_SECOND = 0.2
