@@ -767,6 +767,11 @@ APP_CONFIG = AnalyzerConfig(
     gaze_down_seconds=3.0,
     head_side_degrees=20.0,
     iris_side_threshold=0.15,
+    # A look at the keyboard tilts the head about 14 degrees (measured on the
+    # team's laptop); 35 degrees caught only an exaggerated nod.
+    head_down_degrees=12.0,
+    combined_down_degrees=8.0,
+    calibrated_head_down_degrees=10.0,
 )
 
 
