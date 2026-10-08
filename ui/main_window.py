@@ -30,7 +30,16 @@ from PySide6.QtWidgets import (
 
 from config import AppConfig, RISK_RED_ABOVE, RISK_YELLOW_FROM
 from core.watermark import watermark_text
-from ui.theme import APP_NAME, window_title
+from core.student import session_metadata, student_name_from_env
+from ui.fonts import apply_brand_accent, load_app_fonts
+from ui.theme import (
+    ACCENT,
+    APP_NAME,
+    MAIN_WINDOW_STYLE,
+    STATUS_OK_COLOR,
+    STATUS_WARNING_COLOR,
+    window_title,
+)
 from core.detectors import DetectorCollection, ModuleStatus
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
@@ -374,9 +383,10 @@ class TeacherReviewDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, student_name: str | None = None) -> None:
         super().__init__()
         self.config = config
+        self.student_name = student_name
         self.answers: dict[int, int] = {}
         self.question_index = 0
         self._shutdown_done = False
@@ -389,6 +399,7 @@ class MainWindow(QMainWindow):
             config.screenshots_dir,
             on_recorded=self.bridge.event_recorded.emit,
             on_error=self.bridge.pipeline_error.emit,
+            metadata=session_metadata(student_name),
         )
         self.pipeline.start()
 
@@ -409,31 +420,17 @@ class MainWindow(QMainWindow):
         self.resize(1280, 780)
         self.setMinimumSize(1050, 680)
         self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #0b1020; color: #e8edf7; }
-            QFrame#card { background: #121a2d; border: 1px solid #26334f;
-                          border-radius: 14px; }
-            QLabel#eyebrow { color: #7f8fae; font-size: 11px; font-weight: 700; }
-            QLabel#heading { font-size: 25px; font-weight: 700; }
-            QLabel#question { font-size: 19px; font-weight: 600; }
-            QLabel#status { padding: 7px 10px; background: #1c2944;
-                            border-radius: 8px; }
-            QRadioButton { background: #17223a; border: 1px solid #2a3a5b;
-                           border-radius: 10px; padding: 13px; font-size: 14px; }
-            QRadioButton:hover { border-color: #5d7df6; }
-            QPushButton { background: #5d7df6; color: white; border: 0;
-                          border-radius: 9px; padding: 11px 18px; font-weight: 700; }
-            QPushButton:hover { background: #7290ff; }
-            QPushButton:disabled { background: #34415e; color: #8290aa; }
-            QPushButton#secondary { background: #202d49; }
-            QProgressBar { border: 0; border-radius: 7px; background: #202a40;
-                           height: 14px; text-align: center; }
-            QProgressBar::chunk { background: #5d7df6; border-radius: 7px; }
-            QListWidget { background: transparent; border: 0; color: #b9c4da; }
+            MAIN_WINDOW_STYLE
+            + """
+            QProgressBar { border: 0; border-radius: 7px; background: #E5E7EB;
+                           height: 14px; text-align: center; color: #1F2937; }
+            QProgressBar::chunk { background: #1E3A8A; border-radius: 7px; }
+            QListWidget { background: transparent; border: 0; color: #374151; }
             """
         )
 
         central = QWidget()
+        central.setObjectName("page")
         root = QHBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(18)
@@ -447,10 +444,9 @@ class MainWindow(QMainWindow):
 
             self.watermark = WatermarkOverlay(
                 central,
-                lambda: watermark_text(None, self.pipeline.session_id),
+                lambda: watermark_text(self.student_name, self.pipeline.session_id),
                 centre_x=0.3,
-                opacity=0.14,
-                rgb=(205, 214, 235),
+                opacity=0.10,
             )
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
@@ -660,7 +656,7 @@ class MainWindow(QMainWindow):
         message: str,
     ) -> None:
         icon = "●" if ok else "○"
-        color = "#55d6a9" if ok else "#f0a45d"
+        color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
         label.setText(f"{icon} {title}: {message}")
         label.setStyleSheet(f"color:{color};")
 
@@ -746,7 +742,18 @@ class MainWindow(QMainWindow):
 def run_application(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication([])
     app.setApplicationName(APP_NAME)
-    window = MainWindow(config)
+    load_app_fonts(app)
+    apply_brand_accent(app, ACCENT)
+    # Camera, protection and the session start only after consent and a name.
+    student_name = student_name_from_env()
+    if student_name is None:
+        from ui.student_start import StudentStartDialog
+
+        start = StudentStartDialog()
+        if start.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        student_name = start.student_name()
+    window = MainWindow(config, student_name)
     window.show()
     try:
         return app.exec()
