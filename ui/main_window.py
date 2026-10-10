@@ -32,6 +32,7 @@ from config import AppConfig, RISK_RED_ABOVE, RISK_YELLOW_FROM
 from core.watermark import watermark_text
 from core.student import session_metadata, student_name_from_env
 from ui.fonts import apply_brand_accent, load_app_fonts
+from ui.preview import make_preview
 from ui.theme import (
     ACCENT,
     APP_NAME,
@@ -106,7 +107,8 @@ class UiBridge(QObject):
 
 
 class CameraWorker(QObject):
-    frame_ready = Signal(QImage)
+    # At most one queued notification: the UI takes the most recent image.
+    frame_ready = Signal()
     module_status = Signal(object)
     camera_status = Signal(bool, str)
     analysis_error = Signal(str)
@@ -126,6 +128,9 @@ class CameraWorker(QObject):
         self._stop_event = threading.Event()
         self._frame_lock = threading.Lock()
         self._latest_frame: Any = None
+        self._preview: QImage | None = None
+        self._preview_size = (640, 360)
+        self._preview_notified = False
         self._capture: Any = None
 
     def stop(self) -> None:
@@ -140,6 +145,28 @@ class CameraWorker(QObject):
                 return None
             return self._latest_frame.copy()
 
+    def set_preview_size(self, width: int, height: int) -> None:
+        with self._frame_lock:
+            self._preview_size = (max(1, width), max(1, height))
+
+    def take_preview(self) -> QImage | None:
+        with self._frame_lock:
+            image = self._preview
+            self._preview = None
+            self._preview_notified = False
+        return image
+
+    def _publish_preview(self, frame: Any) -> None:
+        with self._frame_lock:
+            size = self._preview_size
+        image = make_preview(frame, *size)
+        with self._frame_lock:
+            self._preview = image
+            notify = not self._preview_notified
+            self._preview_notified = True
+        if notify:
+            self.frame_ready.emit()
+
     def run(self) -> None:
         try:
             import cv2
@@ -147,9 +174,6 @@ class CameraWorker(QObject):
             self.camera_status.emit(False, "Не установлен OpenCV")
             self.finished.emit()
             return
-
-        for status in self.detectors.load():
-            self.module_status.emit(status)
 
         backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else 0
         capture = cv2.VideoCapture(self.config.camera_index, backend)
@@ -178,6 +202,7 @@ class CameraWorker(QObject):
         analyzed_frames = 0
         phone_time_total = 0.0
         gaze_time_total = 0.0
+        modules_loaded = False
 
         try:
             while not self._stop_event.is_set():
@@ -193,8 +218,24 @@ class CameraWorker(QObject):
                 captured_frames += 1
 
                 now = time.monotonic()
+                # Publish before loading/inference so the first camera image
+                # does not wait for model startup. Only the display copy shrinks.
+                if now - last_preview >= preview_interval:
+                    self._publish_preview(frame)
+                    last_preview = now
+                if self._stop_event.is_set():
+                    break
+                if not modules_loaded:
+                    self.camera_status.emit(True, "Камера активна · подготовка распознавания…")
+                    for status in self.detectors.load():
+                        self.module_status.emit(status)
+                    modules_loaded = True
+                    if self._stop_event.is_set():
+                        break
                 if now - last_analysis >= analysis_interval:
                     events, errors = self.detectors.analyze(frame)
+                    if analyzed_frames == 0 and last_analysis == 0.0:
+                        self.camera_status.emit(True, "Камера активна")
                     analyzed_frames += 1
                     phone_time_total += self.detectors.last_timings_ms.get("phone", 0.0)
                     gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
@@ -220,18 +261,6 @@ class CameraWorker(QObject):
                     phone_time_total = 0.0
                     gaze_time_total = 0.0
 
-                if now - last_preview >= preview_interval:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    height, width, channels = rgb.shape
-                    image = QImage(
-                        rgb.data,
-                        width,
-                        height,
-                        channels * width,
-                        QImage.Format.Format_RGB888,
-                    ).copy()
-                    self.frame_ready.emit(image)
-                    last_preview = now
                 QThread.msleep(2)
         finally:
             self.detectors.close()
@@ -624,6 +653,7 @@ class MainWindow(QMainWindow):
 
         self.camera_thread = QThread(self)
         self.camera_worker = CameraWorker(self.config, self.detectors, self.pipeline)
+        self._set_preview_size()
         self.camera_worker.moveToThread(self.camera_thread)
         self.camera_thread.started.connect(self.camera_worker.run)
         self.camera_worker.frame_ready.connect(self._show_frame)
@@ -638,15 +668,30 @@ class MainWindow(QMainWindow):
         frame = self.camera_worker.snapshot() if self.camera_worker is not None else None
         self.pipeline.submit(event, frame)
 
-    def _show_frame(self, image: QImage) -> None:
-        pixmap = QPixmap.fromImage(image)
-        self.camera_label.setPixmap(
-            pixmap.scaled(
-                self.camera_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+    def _set_preview_size(self) -> None:
+        if self.camera_worker is not None:
+            ratio = self.camera_label.devicePixelRatioF()
+            self.camera_worker.set_preview_size(
+                round(self.camera_label.width() * ratio),
+                round(self.camera_label.height() * ratio),
             )
+
+    def _show_frame(self) -> None:
+        if self._shutdown_done or self.camera_worker is None:
+            return
+        self._set_preview_size()
+        image = self.camera_worker.take_preview()
+        if image is None:
+            return
+        ratio = self.camera_label.devicePixelRatioF()
+        pixmap = QPixmap.fromImage(image)
+        pixmap = pixmap.scaled(
+            self.camera_label.size() * ratio,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        pixmap.setDevicePixelRatio(ratio)
+        self.camera_label.setPixmap(pixmap)
 
     def _set_status(
         self,
