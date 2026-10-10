@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
@@ -58,7 +59,7 @@ from ui.theme import (
     window_title,
 )
 
-from .conclusion import build_conclusion
+from .conclusion import Conclusion, build_conclusion
 from .report import default_report_name, write_session_report
 
 
@@ -101,6 +102,21 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
     layout.setSpacing(10)
     return frame, layout
 
+
+
+def _conclusion_html(conclusion: Conclusion) -> str:
+    """The conclusion with the headline and fired rules in bold."""
+    parts = [f"<p><b>{escape(conclusion.headline)}</b></p>"]
+    if conclusion.findings:
+        parts.append("<p><b>Сработавшие правила:</b></p><ul>")
+        parts.extend(f"<li><b>{escape(str(item))}</b></li>" for item in conclusion.findings)
+        parts.append("</ul><p>События:</p>")
+    if conclusion.reasons:
+        parts.append("<ul>")
+        parts.extend(f"<li>{escape(str(item))}</li>" for item in conclusion.reasons)
+        parts.append("</ul>")
+    parts.append(f"<p>{escape(conclusion.recommendation)}</p>")
+    return "".join(parts)
 
 class NumericItem(QTableWidgetItem):
     """Сортирует риск как число, а не как строку."""
@@ -374,9 +390,12 @@ class TeacherWindow(QMainWindow):
         title.setObjectName("section")
         conclusion_layout.addWidget(title)
         conclusion_label = QLabel(
-            build_conclusion(session, review.false_positive_ids).as_text()
+            _conclusion_html(build_conclusion(session, review.false_positive_ids))
         )
+        conclusion_label.setTextFormat(Qt.TextFormat.RichText)
         conclusion_label.setWordWrap(True)
+        # Readable from a projector: the rules are the main finding.
+        conclusion_label.setStyleSheet("font-size: 16px;")
         conclusion_layout.addWidget(conclusion_label)
         root.addWidget(conclusion_card)
 

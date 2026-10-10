@@ -34,8 +34,20 @@ from core.student import session_metadata, student_name_from_env
 from ui.fonts import apply_brand_accent, load_app_fonts
 from ui.theme import (
     ACCENT,
+    ACCENT_SOFT,
     APP_NAME,
+    BORDER,
+    CARD,
+    CRITICAL,
+    CRITICAL_TEXT,
+    HEADING,
     MAIN_WINDOW_STYLE,
+    MUTED,
+    PAGE,
+    SAFE,
+    SAFE_TEXT,
+    TEXT,
+    WARNING_TEXT,
     STATUS_OK_COLOR,
     STATUS_WARNING_COLOR,
     window_title,
@@ -261,16 +273,19 @@ class TeacherReviewDialog(QDialog):
         self.resize(900, 720)
         self.setModal(True)
         self.setStyleSheet(
-            """
-            QDialog, QWidget { background: #0b1020; color: #e8edf7; }
-            QFrame#reviewCard { background: #121a2d; border: 1px solid #26334f;
-                                border-radius: 12px; }
-            QLabel#reviewHeading { font-size: 24px; font-weight: 700; }
-            QPushButton { border: 0; border-radius: 9px; padding: 12px 18px;
-                          color: white; font-weight: 700; }
-            QPushButton#cheated { background: #c94f5d; }
-            QPushButton#notCheated { background: #279b78; }
-            QScrollArea { border: 0; }
+            f"""
+            QDialog, QWidget {{ background: {PAGE}; color: {TEXT}; }}
+            QFrame#reviewCard {{ background: {CARD}; border: 1px solid {BORDER};
+                                border-radius: 12px; }}
+            QFrame#reviewCard QLabel {{ background: transparent; }}
+            QLabel#reviewHeading {{ font-size: 24px; font-weight: 700; color: {HEADING}; }}
+            QPushButton {{ border: 0; border-radius: 9px; padding: 12px 18px;
+                          color: white; font-weight: 700; }}
+            QPushButton#cheated {{ background: {CRITICAL}; }}
+            QPushButton#cheated:hover {{ background: {CRITICAL_TEXT}; }}
+            QPushButton#notCheated {{ background: {SAFE}; }}
+            QPushButton#notCheated:hover {{ background: {SAFE_TEXT}; }}
+            QScrollArea {{ border: 0; }}
             """
         )
 
@@ -322,11 +337,12 @@ class TeacherReviewDialog(QDialog):
 
     @staticmethod
     def _risk_color(value: float) -> str:
+        # Darker shades keep the number readable on the light background.
         if value > RISK_RED_ABOVE:
-            return "#ef6262"
+            return CRITICAL_TEXT
         if value >= RISK_YELLOW_FROM:
-            return "#f0c45d"
-        return "#55d6a9"
+            return WARNING_TEXT
+        return SAFE_TEXT
 
     def _event_card(self, stored: StoredEvent) -> QFrame:
         card = QFrame()
@@ -336,7 +352,9 @@ class TeacherReviewDialog(QDialog):
         preview = QLabel("Без снимка")
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview.setFixedSize(180, 105)
-        preview.setStyleSheet("background:#070b15; border-radius:8px; color:#70809e;")
+        preview.setStyleSheet(
+            f"background:{ACCENT_SOFT}; border-radius:8px; color:{MUTED};"
+        )
         if stored.screenshot_path:
             pixmap = QPixmap(stored.screenshot_path)
             if not pixmap.isNull():
@@ -353,7 +371,7 @@ class TeacherReviewDialog(QDialog):
         text = QVBoxLayout()
         event_name = stored.event.type.value
         title = QLabel(EVENT_LABELS.get(event_name, event_name))
-        title.setStyleSheet("font-size:16px; font-weight:700;")
+        title.setStyleSheet(f"font-size:16px; font-weight:700; color:{HEADING};")
         text.addWidget(title)
         local_time = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
         text.addWidget(QLabel(f"Время: {local_time} · Источник: {stored.event.source}"))
@@ -511,7 +529,7 @@ class MainWindow(QMainWindow):
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_label.setMinimumHeight(250)
         self.camera_label.setStyleSheet(
-            "background:#070b15; border-radius:10px; color:#70809e;"
+            f"background:{ACCENT_SOFT}; border-radius:10px; color:{MUTED};"
         )
         camera_layout.addWidget(self.camera_label)
 
@@ -620,7 +638,13 @@ class MainWindow(QMainWindow):
 
     def start_monitoring(self) -> None:
         enabled, message = self.security.enable(hwnd=int(self.winId()))
-        self._set_status(self.security_status_label, "Защита", enabled, message)
+        self._set_status(
+            self.security_status_label,
+            "Защита",
+            enabled,
+            "включена" if enabled else "не включена",
+            detail=message,
+        )
 
         self.camera_thread = QThread(self)
         self.camera_worker = CameraWorker(self.config, self.detectors, self.pipeline)
@@ -654,21 +678,33 @@ class MainWindow(QMainWindow):
         title: str,
         ok: bool,
         message: str,
+        detail: str = "",
     ) -> None:
         icon = "●" if ok else "○"
         color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
         label.setText(f"{icon} {title}: {message}")
         label.setStyleSheet(f"color:{color};")
+        # Module names and errors stay available on hover for the team.
+        label.setToolTip(detail)
 
     def _on_camera_status(self, ok: bool, message: str) -> None:
-        self._set_status(self.camera_status_label, "Камера", ok, message)
+        icon = "●" if ok else "○"
+        color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
+        self.camera_status_label.setText(f"{icon} {message}")
+        self.camera_status_label.setStyleSheet(f"color:{color};")
         if not ok and "остановлена" not in message:
             self.camera_label.setText(message)
 
     def _on_module_status(self, status: ModuleStatus) -> None:
         label = self.phone_status_label if status.name == "phone" else self.gaze_status_label
         title = "Телефон" if status.name == "phone" else "Взгляд"
-        self._set_status(label, title, status.loaded, status.message)
+        self._set_status(
+            label,
+            title,
+            status.loaded,
+            "работает" if status.loaded else "не загружен",
+            detail=status.message,
+        )
 
     def _on_performance(
         self,
@@ -678,12 +714,14 @@ class MainWindow(QMainWindow):
         gaze_ms: float,
     ) -> None:
         total_ms = phone_ms + gaze_ms
-        message = (
-            f"камера {camera_fps:.1f} FPS · анализ {analysis_fps:.1f} FPS · "
+        message = f"камера {camera_fps:.0f} FPS · анализ {analysis_fps:.0f} в секунду"
+        detail = (
             f"YOLO {phone_ms:.0f} мс · MediaPipe {gaze_ms:.0f} мс · "
             f"вместе {total_ms:.0f} мс"
         )
-        self._set_status(self.performance_status_label, "Скорость", True, message)
+        self._set_status(
+            self.performance_status_label, "Скорость", True, message, detail=detail
+        )
 
     def _update_risk_display(self, risk: float) -> None:
         self.risk_bar.setValue(max(0, min(100, round(risk))))
