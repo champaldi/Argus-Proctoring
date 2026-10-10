@@ -1,0 +1,40 @@
+name: tests
+
+# Runs the logic tests on a clean Windows VM on every push and pull request.
+# The camera, the models' real weights and the live window are not checked here:
+# the tests use stand-ins, so this does not replace a run on the demo laptop.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      # Qt draws windows without a screen.
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Application, protection, risk and gaze tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Phone detector tests
+        run: python -m unittest discover -s detection -p "test_*.py" -v
+
+      - name: Teacher panel tests
+        run: python -m unittest discover -s teacher -p "test_*.py" -v
