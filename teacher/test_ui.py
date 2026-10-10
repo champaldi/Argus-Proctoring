@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from contextlib import chdir
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,9 +34,13 @@ class TeacherUiTests(unittest.TestCase):
                 stored = window.sessions[0].events[0]
                 original = window._frame_pixmap(stored).toImage()
                 # Old storage persisted paths relative to the launching directory.
-                relative = os.path.relpath(stored.screenshot_path, Path.cwd())
-                legacy = replace(stored, screenshot_path=relative)
-                self.assertEqual(window._frame_pixmap(legacy).toImage(), original)
+                # The checkout and system temp directory can be on different
+                # Windows drives. Launch from the fixture's drive so a relative
+                # path exists, independently of where the repository lives.
+                with chdir(root.parent):
+                    relative = os.path.relpath(stored.screenshot_path, Path.cwd())
+                    legacy = replace(stored, screenshot_path=relative)
+                    self.assertEqual(window._frame_pixmap(legacy).toImage(), original)
             finally:
                 window.close()
 
