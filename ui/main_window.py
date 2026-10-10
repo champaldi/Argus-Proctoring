@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -390,6 +391,10 @@ class MainWindow(QMainWindow):
         self.answers: dict[int, int] = {}
         self.question_index = 0
         self._shutdown_done = False
+        # The questions open only after the pre-test check: models loaded and
+        # the camera delivering frames.
+        self._camera_ready = False
+        self._module_results: dict[str, bool] = {}
 
         self.bridge = UiBridge()
         self.bridge.event_recorded.connect(self._on_event_recorded)
@@ -458,6 +463,74 @@ class MainWindow(QMainWindow):
         return card, layout
 
     def _build_test_panel(self) -> QWidget:
+        # Page 0: the pre-test check. Page 1: the questions.
+        self.test_stack = QStackedWidget()
+        self.test_stack.addWidget(self._build_check_card())
+        self.test_stack.addWidget(self._build_question_card())
+        return self.test_stack
+
+    def _build_check_card(self) -> QWidget:
+        card, layout = self._card()
+        eyebrow = QLabel("ПРОВЕРКА ПЕРЕД ТЕСТОМ")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+
+        title = QLabel("Подготовка к тесту")
+        title.setObjectName("heading")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Посмотрите в камеру: справа должно появиться ваше изображение. "
+            "Вопросы откроются, когда оборудование будет готово."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("font-size:15px;")
+        layout.addWidget(hint)
+        layout.addSpacing(8)
+
+        self.check_security_label = QLabel()
+        self.check_models_label = QLabel()
+        self.check_camera_label = QLabel()
+        for label in (
+            self.check_security_label,
+            self.check_models_label,
+            self.check_camera_label,
+        ):
+            label.setObjectName("status")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        self._set_check(self.check_security_label, "Защита: включается…", None)
+        self._set_check(self.check_models_label, "Модели: загрузка…", None)
+        self._set_check(self.check_camera_label, "Камера: ожидание…", None)
+        layout.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.start_test_button = QPushButton("Начать тест")
+        self.start_test_button.setEnabled(False)
+        self.start_test_button.clicked.connect(self._begin_test)
+        buttons.addWidget(self.start_test_button)
+        layout.addLayout(buttons)
+        return card
+
+    @staticmethod
+    def _set_check(label: QLabel, text: str, ok: bool | None) -> None:
+        """ok=None means still in progress."""
+        if ok is None:
+            icon, color = "○", "#6B7280"
+        elif ok:
+            icon, color = "●", STATUS_OK_COLOR
+        else:
+            icon, color = "●", STATUS_WARNING_COLOR
+        label.setText(f"{icon} {text}")
+        label.setStyleSheet(f"color:{color};")
+
+    def _begin_test(self) -> None:
+        if not self._camera_ready:
+            return
+        self.test_stack.setCurrentIndex(1)
+
+    def _build_question_card(self) -> QWidget:
         card, layout = self._card()
         eyebrow = QLabel("ДЕМОНСТРАЦИОННЫЙ ТЕСТ")
         eyebrow.setObjectName("eyebrow")
@@ -621,6 +694,11 @@ class MainWindow(QMainWindow):
     def start_monitoring(self) -> None:
         enabled, message = self.security.enable(hwnd=int(self.winId()))
         self._set_status(self.security_status_label, "Защита", enabled, message)
+        self._set_check(
+            self.check_security_label,
+            "Защита включена" if enabled else f"Защита не включена: {message}",
+            enabled,
+        )
 
         self.camera_thread = QThread(self)
         self.camera_worker = CameraWorker(self.config, self.detectors, self.pipeline)
@@ -639,6 +717,14 @@ class MainWindow(QMainWindow):
         self.pipeline.submit(event, frame)
 
     def _show_frame(self, image: QImage) -> None:
+        if not self._camera_ready:
+            # The worker emits the first preview only after the first analysis,
+            # when YOLO, CLIP and MediaPipe have actually loaded their weights.
+            self._camera_ready = True
+            self._set_check(self.check_camera_label, "Камера работает", True)
+            if all(self._module_results.values()):
+                self._set_check(self.check_models_label, "Модели готовы", True)
+            self.start_test_button.setEnabled(True)
         pixmap = QPixmap.fromImage(image)
         self.camera_label.setPixmap(
             pixmap.scaled(
@@ -664,11 +750,37 @@ class MainWindow(QMainWindow):
         self._set_status(self.camera_status_label, "Камера", ok, message)
         if not ok and "остановлена" not in message:
             self.camera_label.setText(message)
+            if not self._camera_ready:
+                self._set_check(
+                    self.check_camera_label,
+                    f"{message}. Обратитесь к преподавателю",
+                    False,
+                )
+        elif ok and not self._camera_ready:
+            self._set_check(
+                self.check_camera_label, "Камера подключена, первый анализ…", None
+            )
 
     def _on_module_status(self, status: ModuleStatus) -> None:
         label = self.phone_status_label if status.name == "phone" else self.gaze_status_label
         title = "Телефон" if status.name == "phone" else "Взгляд"
         self._set_status(label, title, status.loaded, status.message)
+        self._module_results[status.name] = status.loaded
+        if {"phone", "gaze"} <= self._module_results.keys():
+            failed = [
+                "телефон" if name == "phone" else "взгляд"
+                for name, loaded in self._module_results.items()
+                if not loaded
+            ]
+            if failed:
+                self._set_check(
+                    self.check_models_label,
+                    "Модели не загрузились: " + ", ".join(failed),
+                    False,
+                )
+            else:
+                # Weights load on the first frame; the camera check finishes it.
+                self._set_check(self.check_models_label, "Модели: подготовка…", None)
 
     def _on_performance(
         self,
