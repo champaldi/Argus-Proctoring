@@ -237,6 +237,23 @@ class ProtectionTests(unittest.TestCase):
         hook(key("f12", 88))
         self.assertTrue(wait_for(lambda: ("unlock", 100) in self.desktop.lock_calls))
 
+    def test_emergency_hotkey_is_reported_to_the_teacher(self):
+        hook = self.start()
+        hook(key("ctrl", 29))
+        hook(key("alt", 56))
+        self.assertTrue(hook(key("f12", 88)))
+        self.assertTrue(wait_for(
+            lambda: any(e["type"] == "protection_disabled" for e in self.events)
+        ))
+        event = next(e for e in self.events if e["type"] == "protection_disabled")
+        self.assertEqual(event["details"]["method"], "ctrl+alt+f12")
+        self.assertEqual(self.protection.status()["reason"], "emergency_hotkey")
+
+    def test_ordinary_disable_is_not_reported_as_a_violation(self):
+        self.start()
+        self.protection.disable()
+        self.assertFalse(any(e["type"] == "protection_disabled" for e in self.events))
+
     def test_combinations_that_close_or_leave_the_test_are_blocked(self):
         hook = self.start()
         cases = [

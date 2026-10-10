@@ -78,6 +78,7 @@ EVENT_LABELS = {
     "remote_session": "Тест запущен через удалённую сессию",
     "multiple_monitors": "Подключено несколько мониторов",
     "injected_input": "Ввод не с физических устройств",
+    "protection_disabled": "Защита отключена вручную (Ctrl+Alt+F12)",
 }
 
 

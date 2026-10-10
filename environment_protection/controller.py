@@ -319,6 +319,25 @@ class Protection:
         except queue.Full:
             session.stop("event_queue_full", RuntimeError("Security event queue is full"))
 
+    def _record_emergency(self, session: _Session) -> None:
+        """Queue the emergency release as a violation, never blocking the key.
+
+        The event is queued directly: a full queue must not change the stop
+        reason, and the dispatcher still delivers queued events after stop.
+        """
+        if session.stopped.is_set():
+            return
+        event = {
+            "type": "protection_disabled",
+            "source": "security",
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "details": {"method": "ctrl+alt+f12"},
+        }
+        try:
+            session.events.put_nowait(event)
+        except queue.Full:
+            pass
+
     def _handle_key(self, session: _Session, event: Any) -> bool:
         if session.stopped.is_set():
             return True
@@ -338,6 +357,8 @@ class Protection:
                     session.modifiers.discard(identity)
             modifiers = {m.removeprefix("left ").removeprefix("right ") for m in session.modifiers}
             if down and scan == 88 and {"ctrl", "alt"} <= modifiers:
+                # Leave a trace for the teacher before the keyboard is released.
+                self._record_emergency(session)
                 session.stop("emergency_hotkey")
                 return True
             if not down:

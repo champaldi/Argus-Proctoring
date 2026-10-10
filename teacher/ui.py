@@ -77,6 +77,7 @@ MOMENT_LABELS = {
     "multiple_monitors": "Несколько мониторов",
     "capture_protection_failed": "Ошибка защиты",
     "too_close_to_camera": "Близко к камере",
+    "protection_disabled": "Защита отключена",
 }
 
 

@@ -26,6 +26,8 @@ RISK_WEIGHTS: dict[str, float] = {
     "remote_session": 30.0,
     "multiple_monitors": 20.0,
     "injected_input": 15.0,
+    # The student switched protection off with the emergency shortcut.
+    "protection_disabled": 40.0,
 }
 # Each minor signal type adds at most this much per session.
 RISK_TYPE_CAPS: dict[str, float] = {

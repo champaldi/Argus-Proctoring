@@ -127,6 +127,11 @@ RULES: tuple[Rule, ...] = (
         _pair(("no_face",), ("phone_detected", "multiple_faces"), 30), covers=("S4",),
     ),
     Rule(
+        "V7", VIOLATION, "Отключение защиты",
+        "во время теста нажато аварийное сочетание Ctrl+Alt+F12",
+        _single("protection_disabled"), covers=("S7",),
+    ),
+    Rule(
         "S1", SUSPICIOUS, "Телефон в кадре",
         "телефон замечен, но признаков использования рядом по времени нет",
         _single("phone_detected"),
