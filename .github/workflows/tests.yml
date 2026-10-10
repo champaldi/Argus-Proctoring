@@ -1,0 +1,93 @@
+name: Argus tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: argus-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-tests:
+    name: Windows / Python 3.11
+    runs-on: windows-2022
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: offscreen
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies (CPU only)
+        id: dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt
+          exit $LASTEXITCODE
+
+      - name: Check dependency compatibility
+        id: packages
+        run: python -m pip check
+
+      - name: Application, protection and gaze tests
+        id: application
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: python -m unittest discover -s tests -v
+
+      - name: Phone detection tests
+        id: detection
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: python -m unittest discover -s detection -p 'test_*.py' -v
+
+      - name: Teacher panel and report tests
+        id: teacher
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: python -m unittest discover -s teacher -p 'test_*.py' -v
+
+      - name: Write check summary
+        if: ${{ always() }}
+        run: |
+          @"
+          ## Argus automated checks
+          | Check | Result |
+          | --- | --- |
+          | Dependency installation | ${{ steps.dependencies.outcome }} |
+          | Dependency compatibility | ${{ steps.packages.outcome }} |
+          | Application, protection and gaze | ${{ steps.application.outcome }} |
+          | Phone detection | ${{ steps.detection.outcome }} |
+          | Teacher panel and reports | ${{ steps.teacher.outcome }} |
+
+          No real webcam or model weights are required for these tests.
+          Before merging camera/gaze/protection changes, also verify the physical
+          camera, real gaze events, remote access and clean shutdown on Windows.
+          A green check does not replace this manual validation.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
