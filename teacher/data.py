@@ -70,11 +70,52 @@ class EventSummary:
     measured_count: int
 
 
+# Exam conditions set by the teacher: an allowed action does not count as a
+# violation. Its events stay in the journal, marked as allowed.
+EXAM_ALLOWANCES: dict[str, tuple[str, frozenset[str]]] = {
+    "look_down": (
+        "Разрешено смотреть вниз: клавиатура, черновик",
+        frozenset({"gaze_down"}),
+    ),
+    "look_side": (
+        "Разрешены материалы сбоку и второй экран",
+        frozenset({"gaze_side", "multiple_monitors"}),
+    ),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Review:
     verdict: str = "unreviewed"
     comment: str = ""
     false_positive_ids: frozenset[str] = frozenset()
+    allowances: frozenset[str] = frozenset()
+
+    def allowed_types(self) -> frozenset[str]:
+        """Event types the teacher allowed on this exam."""
+        types: set[str] = set()
+        for key in self.allowances:
+            if key in EXAM_ALLOWANCES:
+                types |= EXAM_ALLOWANCES[key][1]
+        return frozenset(types)
+
+
+def allowed_event_ids(session: "Session", review: Review | None) -> frozenset[str]:
+    """Events of the allowed types; they are left out of risk and rules."""
+    if review is None:
+        return frozenset()
+    types = review.allowed_types()
+    return frozenset(
+        stored.event.event_id for stored in session.events
+        if stored.event.type.value in types
+    )
+
+
+def excluded_event_ids(session: "Session", review: Review | None) -> frozenset[str]:
+    """Events that do not count: marked as false positives or allowed."""
+    if review is None:
+        return frozenset()
+    return review.false_positive_ids | allowed_event_ids(session, review)
 
 
 def load_sessions(database_path: Path) -> list[Session]:
@@ -226,6 +267,11 @@ class ReviewStore:
                     event_id TEXT NOT NULL,
                     PRIMARY KEY (session_id, event_id)
                 );
+                CREATE TABLE IF NOT EXISTS allowances (
+                    session_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    PRIMARY KEY (session_id, kind)
+                );
             """)
 
     @contextmanager
@@ -247,16 +293,23 @@ class ReviewStore:
             flags = connection.execute(
                 "SELECT session_id, event_id FROM false_positives"
             ).fetchall()
+            allowance_rows = connection.execute(
+                "SELECT session_id, kind FROM allowances"
+            ).fetchall()
         values = {session_id: (verdict, comment) for session_id, verdict, comment in rows}
         flagged: dict[str, set[str]] = {}
         for session_id, event_id in flags:
             flagged.setdefault(session_id, set()).add(event_id)
+        allowed: dict[str, set[str]] = {}
+        for session_id, kind in allowance_rows:
+            allowed.setdefault(session_id, set()).add(kind)
         return {
             session_id: Review(
                 *(values.get(session_id, ("unreviewed", ""))),
                 frozenset(flagged.get(session_id, set())),
+                frozenset(allowed.get(session_id, set())),
             )
-            for session_id in values.keys() | flagged.keys()
+            for session_id in values.keys() | flagged.keys() | allowed.keys()
         }
 
     def load_review(self, session_id: str) -> Review:
@@ -289,6 +342,22 @@ class ReviewStore:
                 )
 
 
+    def set_allowance(self, session_id: str, kind: str, enabled: bool) -> None:
+        if kind not in EXAM_ALLOWANCES:
+            raise ValueError(f"неизвестное условие экзамена: {kind}")
+        with self._connection() as connection:
+            if enabled:
+                connection.execute(
+                    "INSERT OR IGNORE INTO allowances (session_id, kind) VALUES (?, ?)",
+                    (session_id, kind),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM allowances WHERE session_id=? AND kind=?",
+                    (session_id, kind),
+                )
+
+
 def _csv_text(value: str) -> str:
     """Keep user-entered text from becoming a spreadsheet formula on import."""
     if value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@")):
@@ -307,7 +376,7 @@ def export_roster(
             review = reviews.get(session.id, Review())
             writer.writerow((
                 _csv_text(session.student_name),
-                f"{recalculate_risk(session, review.false_positive_ids):.1f}",
+                f"{recalculate_risk(session, excluded_event_ids(session, review)):.1f}",
                 VERDICT_LABELS[current_verdict(session, reviews.get(session.id))],
                 _csv_text(review.comment),
             ))

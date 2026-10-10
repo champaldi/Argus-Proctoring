@@ -34,12 +34,15 @@ from PySide6.QtWidgets import (
 from core.storage import StoredEvent
 from core.event_presentation import EVENT_LABELS, application_details
 from .data import (
+    EXAM_ALLOWANCES,
     Review,
     ReviewStore,
     Session,
     VERDICT_LABELS,
+    allowed_event_ids,
     current_verdict,
     event_duration,
+    excluded_event_ids,
     export_roster,
     load_sessions,
     recalculate_risk,
@@ -296,8 +299,9 @@ class TeacherWindow(QMainWindow):
             verdict = current_verdict(session, self.review_values.get(session.id))
             if self.review_filter.isChecked() and verdict not in {"unreviewed", "questionable"}:
                 continue
-            score = recalculate_risk(session, review.false_positive_ids)
-            summary = summarize_events(session, review.false_positive_ids)
+            excluded = excluded_event_ids(session, review)
+            score = recalculate_risk(session, excluded)
+            summary = summarize_events(session, excluded)
             count_text = ", ".join(
                 f"{EVENT_LABELS.get(name, name)} ×{item.count}"
                 for name, item in sorted(summary.items())
@@ -374,7 +378,9 @@ class TeacherWindow(QMainWindow):
             f"{started}  ·  {_duration_text(session.duration_seconds)}  ·  "
             f"{'идёт' if session.status == 'active' else 'завершена' if session.status == 'completed' else session.status}"
         ))
-        score = recalculate_risk(session, review.false_positive_ids)
+        allowed = allowed_event_ids(session, review)
+        excluded = excluded_event_ids(session, review)
+        score = recalculate_risk(session, excluded)
         risk_card, risk_layout = _card()
         risk_label = QLabel(
             f"Пересчитанный риск: {score:.1f} / 100  ·  {ZONE_LABELS[risk_zone(score)]} зона"
@@ -385,12 +391,29 @@ class TeacherWindow(QMainWindow):
         risk_layout.addWidget(QLabel(f"Риск в исходном журнале: {session.final_risk:.1f}"))
         root.addWidget(risk_card)
 
+        conditions_card, conditions_layout = _card()
+        title = QLabel("Условия экзамена")
+        title.setObjectName("section")
+        conditions_layout.addWidget(title)
+        conditions_layout.addWidget(QLabel(
+            "Разрешённое действие не считается нарушением: события остаются в журнале "
+            "с пометкой, риск и правила пересчитываются."
+        ))
+        for key, (label, _types) in EXAM_ALLOWANCES.items():
+            box = QCheckBox(label)
+            box.setChecked(key in review.allowances)
+            box.toggled.connect(
+                lambda checked, kind=key: self._allowance_changed(session, kind, checked)
+            )
+            conditions_layout.addWidget(box)
+        root.addWidget(conditions_card)
+
         conclusion_card, conclusion_layout = _card()
         title = QLabel("Заключение системы")
         title.setObjectName("section")
         conclusion_layout.addWidget(title)
         conclusion_label = QLabel(
-            _conclusion_html(build_conclusion(session, review.false_positive_ids))
+            _conclusion_html(build_conclusion(session, excluded))
         )
         conclusion_label.setTextFormat(Qt.TextFormat.RichText)
         conclusion_label.setWordWrap(True)
@@ -403,7 +426,7 @@ class TeacherWindow(QMainWindow):
         title = QLabel("Сводка нарушений")
         title.setObjectName("section")
         summary_layout.addWidget(title)
-        summary = summarize_events(session, review.false_positive_ids)
+        summary = summarize_events(session, excluded)
         if not summary:
             summary_layout.addWidget(QLabel("Подтверждённых нарушений нет."))
         for name, item in sorted(summary.items()):
@@ -419,8 +442,8 @@ class TeacherWindow(QMainWindow):
         title = QLabel("Таймлайн теста")
         title.setObjectName("section")
         timeline_layout.addWidget(title)
-        timeline_layout.addWidget(Timeline(session, review.false_positive_ids))
-        timeline_layout.addWidget(QLabel("Зелёный — низкий вес · жёлтый — средний · красный — высокий · серый — ошибочное событие"))
+        timeline_layout.addWidget(Timeline(session, excluded))
+        timeline_layout.addWidget(QLabel("Зелёный — низкий вес · жёлтый — средний · красный — высокий · серый — ошибочное или разрешённое событие"))
         root.addWidget(timeline_card)
 
         moments_card, moments_layout = _card()
@@ -429,7 +452,7 @@ class TeacherWindow(QMainWindow):
         moments_layout.addWidget(title)
         moments_row = QHBoxLayout()
         moments = sorted(
-            (item for item in session.events if item.event.event_id not in review.false_positive_ids),
+            (item for item in session.events if item.event.event_id not in excluded),
             key=lambda item: (item.weight, item.event.occurred_at), reverse=True,
         )[:5]
         if not moments:
@@ -472,15 +495,19 @@ class TeacherWindow(QMainWindow):
         event_table.blockSignals(True)
         for row, stored in enumerate(session.events):
             duration = event_duration(stored)
+            is_allowed = stored.event.event_id in allowed
             values = (
                 stored.event.occurred_at.astimezone().strftime("%H:%M:%S"),
-                _event_name(stored), f"+{stored.weight:g}",
+                _event_name(stored) + (" · разрешено" if is_allowed else ""),
+                f"+{stored.weight:g}",
                 f"{duration:.1f} с" if duration is not None else "—",
                 stored.event.source,
             )
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
                 cell.setToolTip(value)
+                if is_allowed:
+                    cell.setForeground(QColor(MUTED))
                 event_table.setItem(row, column, cell)
             flag = QTableWidgetItem()
             flag.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
@@ -564,6 +591,15 @@ class TeacherWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Не удалось сохранить отметку", str(exc))
+            return
+        self._show_session(session, draft_comment=draft)
+
+    def _allowance_changed(self, session: Session, kind: str, enabled: bool) -> None:
+        draft = self.comment_edit.toPlainText()
+        try:
+            self.reviews.set_allowance(session.id, kind, enabled)
+        except Exception as exc:
+            QMessageBox.critical(self, "Не удалось сохранить условия экзамена", str(exc))
             return
         self._show_session(session, draft_comment=draft)
 

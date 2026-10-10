@@ -19,11 +19,14 @@ from ui.theme import APP_NAME
 
 from .conclusion import build_conclusion
 from .data import (
+    EXAM_ALLOWANCES,
     Review,
     Session,
     VERDICT_LABELS,
+    allowed_event_ids,
     current_verdict,
     event_duration,
+    excluded_event_ids,
     recalculate_risk,
     resolve_evidence_path,
     risk_zone,
@@ -166,7 +169,8 @@ def render_session_report(
 ) -> str:
     """Возвращает HTML отчёта; события, снятые преподавателем, в расчёт не входят."""
     review = review or Review()
-    excluded = set(review.false_positive_ids)
+    allowed = allowed_event_ids(session, review)
+    excluded = set(excluded_event_ids(session, review))
     score = recalculate_risk(session, excluded)
     zone = risk_zone(score)
     conclusion = build_conclusion(session, excluded)
@@ -248,12 +252,14 @@ def render_session_report(
     event_rows = []
     for stored in session.events:
         dismissed = stored.event.event_id in excluded
+        mark = (" (разрешено условиями экзамена)" if stored.event.event_id in allowed
+                else " (снято преподавателем)")
         duration = event_duration(stored)
         event_rows.append(
             f'<tr class="{"dismissed" if dismissed else ""}">'
             f'<td class="num">{_offset_text(session, stored)}</td>'
             f"<td>{escape(_event_title(stored))}"
-            f'{" (снято преподавателем)" if dismissed else ""}</td>'
+            f'{mark if dismissed else ""}</td>'
             f'<td class="num">+{stored.weight:g}</td>'
             f'<td class="num">{f"{duration:.1f} с" if duration is not None else "—"}</td>'
             f"<td>{escape(stored.event.source)}</td></tr>"
@@ -271,9 +277,15 @@ def render_session_report(
         if review.comment.strip()
         else '<p class="muted">Комментария нет.</p>'
     )
-    dismissed_note = (
-        f'<p class="muted">Снято как ошибочные: {len(excluded)}.</p>' if excluded else ""
-    )
+    allowance_labels = [EXAM_ALLOWANCES[key][0] for key in sorted(review.allowances)
+                        if key in EXAM_ALLOWANCES]
+    dismissed_note = "".join((
+        f'<p class="muted">Снято как ошибочные: {len(review.false_positive_ids)}.</p>'
+        if review.false_positive_ids else "",
+        '<p class="muted">Условия экзамена: '
+        + escape("; ".join(allowance_labels)) + f". Разрешённых событий: {len(allowed)}.</p>"
+        if allowance_labels else "",
+    ))
 
     return f"""<!doctype html>
 <html lang="ru">
