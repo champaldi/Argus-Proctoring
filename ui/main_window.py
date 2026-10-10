@@ -213,6 +213,9 @@ class CameraWorker(QObject):
                     gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
                     for event in events:
                         self.pipeline.submit(event, frame)
+                    if not events:
+                        # A no-op after the first stored control photo.
+                        self.pipeline.offer_reference_frame(frame)
                     for message in errors:
                         if now - last_error.get(message, 0.0) >= 5.0:
                             self.analysis_error.emit(message)

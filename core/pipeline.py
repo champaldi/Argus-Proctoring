@@ -39,6 +39,15 @@ class _QueuedEvent:
     frame: Any
 
 
+@dataclass(slots=True)
+class _ReferenceFrame:
+    frame: Any
+
+
+# The camera needs a moment to settle exposure before the control photo.
+REFERENCE_PHOTO_DELAY_SECONDS = 2.0
+
+
 class EventPipeline:
     def __init__(
         self,
@@ -59,7 +68,9 @@ class EventPipeline:
         self.on_recorded = on_recorded
         self.on_error = on_error
         self.cooldowns = dict(DEFAULT_COOLDOWNS if cooldowns is None else cooldowns)
-        self._queue: queue.Queue[_QueuedEvent | None] = queue.Queue(queue_size)
+        self._queue: queue.Queue[_QueuedEvent | _ReferenceFrame | None] = queue.Queue(
+            queue_size
+        )
         self._scorer = scorer or RiskScorer()
         self._last_seen: dict[EventType, float] = {}
         self._dedupe_lock = threading.Lock()
@@ -67,6 +78,8 @@ class EventPipeline:
         self._startup_error: Exception | None = None
         self._thread: threading.Thread | None = None
         self._stopping = False
+        self._started_at: float | None = None
+        self._reference_requested = False
 
     def start(self) -> None:
         if self._thread is not None:
@@ -81,6 +94,27 @@ class EventPipeline:
             raise TimeoutError("event storage did not start in time")
         if self._startup_error is not None:
             raise RuntimeError("could not start event storage") from self._startup_error
+        self._started_at = time.monotonic()
+
+    def offer_reference_frame(self, frame: Any) -> bool:
+        """Keep one calm frame from the start of the test as the control photo.
+
+        Call it with frames that produced no violation. The first frame offered
+        after a short delay is stored; later calls return at once.
+        """
+        if frame is None or self._reference_requested or self._started_at is None:
+            return False
+        if self._thread is None or self._stopping:
+            return False
+        if time.monotonic() - self._started_at < REFERENCE_PHOTO_DELAY_SECONDS:
+            return False
+        safe_frame = frame.copy() if hasattr(frame, "copy") else frame
+        try:
+            self._queue.put_nowait(_ReferenceFrame(frame=safe_frame))
+        except queue.Full:
+            return False
+        self._reference_requested = True
+        return True
 
     def submit(self, event: ProctorEvent, frame: Any = None) -> bool:
         if self._thread is None or self._stopping:
@@ -140,6 +174,18 @@ class EventPipeline:
                 if queued is None:
                     self._queue.task_done()
                     break
+                if isinstance(queued, _ReferenceFrame):
+                    try:
+                        store.save_reference_photo(self.session_id, queued.frame)
+                    except Exception as exc:
+                        # Allow another attempt with a later frame.
+                        self._reference_requested = False
+                        self._report_error(
+                            f"Не удалось сохранить контрольный кадр: {type(exc).__name__}: {exc}"
+                        )
+                    finally:
+                        self._queue.task_done()
+                    continue
                 try:
                     update = self._scorer.add(queued.event)
                     stored = store.record_event(
