@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog
+from shiboken6 import delete
 
 from core.storage import EventStore
 from events import ProctorEvent
@@ -42,6 +43,9 @@ class TeacherReviewDialogTests(unittest.TestCase):
                 final_risk=10.0,
                 test_score=(3, 4),
             )
+            # Signal callbacks keep the dialog alive after accept(). Destroy it
+            # before QApplication is torn down, including on assertion failure.
+            self.addCleanup(delete, dialog)
             QTimer.singleShot(0, lambda: dialog._save_verdict("cheated"))
             result = dialog.exec()
 

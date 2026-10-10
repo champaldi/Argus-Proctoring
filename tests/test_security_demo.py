@@ -7,6 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from shiboken6 import delete
 
 from environment_protection import demo
 
@@ -43,3 +44,6 @@ class DemoTests(unittest.TestCase):
                 self.assertFalse(window.timer.isActive())
             finally:
                 window.close()
+                # close() only hides the widget. Release native Qt objects while
+                # QApplication still exists, rather than at interpreter shutdown.
+                delete(window)
