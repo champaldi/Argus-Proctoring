@@ -102,7 +102,7 @@ class ReferencePhotoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pipeline = EventPipeline(root / "events.db", root / "screenshots")
-            frame = np.zeros((24, 32, 3), dtype=np.uint8)
+            frame = np.full((24, 32, 3), 120, dtype=np.uint8)
             with patch.object(pipeline_module, "REFERENCE_PHOTO_DELAY_SECONDS", 0.0):
                 pipeline.start()
                 self.assertTrue(pipeline.offer_reference_frame(frame))
@@ -125,4 +125,36 @@ class ReferencePhotoTests(unittest.TestCase):
             pipeline = EventPipeline(root / "events.db", root / "screenshots")
             pipeline.start()
             self.assertFalse(pipeline.offer_reference_frame(np.zeros((4, 4, 3), np.uint8)))
+            pipeline.stop()
+
+
+    def test_dark_frames_of_a_waking_camera_are_skipped(self) -> None:
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from core import pipeline as pipeline_module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(root / "events.db", root / "screenshots")
+            with patch.object(pipeline_module, "REFERENCE_PHOTO_DELAY_SECONDS", 0.0):
+                pipeline.start()
+                self.assertFalse(pipeline.offer_reference_frame(np.zeros((8, 8, 3), np.uint8)))
+                self.assertTrue(
+                    pipeline.offer_reference_frame(np.full((8, 8, 3), 120, np.uint8))
+                )
+                pipeline.stop()
+
+    def test_delay_counts_from_the_first_camera_frame(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(root / "events.db", root / "screenshots")
+            pipeline.start()
+            pipeline._started_at -= 60  # the models took a minute to load
+            self.assertFalse(
+                pipeline.offer_reference_frame(np.full((8, 8, 3), 120, np.uint8))
+            )
             pipeline.stop()

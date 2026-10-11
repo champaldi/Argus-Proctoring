@@ -261,7 +261,8 @@ def render_session_report(
             picture = (f'<img src="{image}" alt="Кадр события">' if image
                        else '<div class="noframe">Нет кадра</div>')
             frames.append(
-                f"<figure>{picture}<figcaption>{escape(_event_title(stored))} · "
+                f"<figure>{picture}<figcaption>"
+                f"{escape(EVENT_LABELS.get(stored.event.type.value, stored.event.type.value))} · "
                 f"{stored.event.occurred_at.astimezone():%H:%M:%S}</figcaption></figure>"
             )
         level = "violation" if finding.level == VIOLATION else ""

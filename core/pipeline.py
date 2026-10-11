@@ -44,8 +44,20 @@ class _ReferenceFrame:
     frame: Any
 
 
-# The camera needs a moment to settle exposure before the control photo.
+# The camera needs a moment to settle exposure before the control photo. The
+# delay counts from the first frame offered, not from the session start: the
+# models load first, so the camera opens several seconds after the session.
 REFERENCE_PHOTO_DELAY_SECONDS = 2.0
+# Frames darker than this mean brightness (0-255) are a camera still waking up.
+REFERENCE_PHOTO_MIN_BRIGHTNESS = 40.0
+
+
+def _brightness(frame: Any) -> float:
+    """Mean pixel value; frames that cannot be measured count as bright."""
+    try:
+        return float(frame.mean())
+    except Exception:
+        return 255.0
 
 
 class EventPipeline:
@@ -80,6 +92,7 @@ class EventPipeline:
         self._stopping = False
         self._started_at: float | None = None
         self._reference_requested = False
+        self._first_offer_at: float | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -106,7 +119,12 @@ class EventPipeline:
             return False
         if self._thread is None or self._stopping:
             return False
-        if time.monotonic() - self._started_at < REFERENCE_PHOTO_DELAY_SECONDS:
+        now = time.monotonic()
+        if self._first_offer_at is None:
+            self._first_offer_at = now
+        if now - self._first_offer_at < REFERENCE_PHOTO_DELAY_SECONDS:
+            return False
+        if _brightness(frame) < REFERENCE_PHOTO_MIN_BRIGHTNESS:
             return False
         safe_frame = frame.copy() if hasattr(frame, "copy") else frame
         try:
