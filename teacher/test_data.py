@@ -194,3 +194,14 @@ class ExamAllowanceTests(TeacherDataTests):
                         allowances=frozenset({"look_side"}))
         self.assertEqual(excluded_event_ids(session, review),
                          frozenset({self.phone_id, self.gaze_id}))
+
+
+class WeightLabelTests(unittest.TestCase):
+    def test_zero_after_the_type_limit_is_explained(self) -> None:
+        from core.storage import StoredEvent
+        from teacher.data import weight_label
+
+        capped = StoredEvent(ProctorEvent.create("hotkey_blocked", source="t"), 0.0, 30.0, None)
+        normal = StoredEvent(ProctorEvent.create("phone_detected", source="t"), 25.0, 25.0, None)
+        self.assertEqual(weight_label(capped), "+0 · лимит типа")
+        self.assertEqual(weight_label(normal), "+25")

@@ -49,7 +49,9 @@ from .data import (
     resolve_evidence_path,
     risk_zone,
     summarize_events,
+    weight_label,
 )
+from .rules import VIOLATION, Finding, evaluate_rules
 from ui.theme import (
     CRITICAL,
     CRITICAL_TEXT,
@@ -78,6 +80,13 @@ MOMENT_LABELS = {
     "capture_protection_failed": "Ошибка защиты",
     "too_close_to_camera": "Близко к камере",
     "protection_disabled": "Защита отключена",
+    "gaze_down": "Взгляд вниз",
+    "gaze_side": "Взгляд в сторону",
+    "no_face": "Нет лица",
+    "hotkey_blocked": "Заблокированные клавиши",
+    "window_switched": "Смена окна",
+    "suspicious_process": "Запрещённая программа",
+    "injected_input": "Удалённый ввод",
 }
 
 
@@ -112,9 +121,10 @@ def _conclusion_html(conclusion: Conclusion) -> str:
     """The conclusion with the headline and fired rules in bold."""
     parts = [f"<p><b>{escape(conclusion.headline)}</b></p>"]
     if conclusion.findings:
-        parts.append("<p><b>Сработавшие правила:</b></p><ul>")
-        parts.extend(f"<li><b>{escape(str(item))}</b></li>" for item in conclusion.findings)
-        parts.append("</ul><p>События:</p>")
+        parts.append(
+            f"<p>Сработало правил: <b>{len(conclusion.findings)}</b> — "
+            "подробно с кадрами в блоке «Сработавшие правила» ниже.</p><p>События:</p>"
+        )
     if conclusion.reasons:
         parts.append("<ul>")
         parts.extend(f"<li>{escape(str(item))}</li>" for item in conclusion.reasons)
@@ -423,6 +433,10 @@ class TeacherWindow(QMainWindow):
         conclusion_layout.addWidget(conclusion_label)
         root.addWidget(conclusion_card)
 
+        findings = evaluate_rules(session, excluded)
+        if findings:
+            root.addWidget(self._rules_card(session, findings))
+
         summary_card, summary_layout = _card()
         title = QLabel("Сводка нарушений")
         title.setObjectName("section")
@@ -483,10 +497,12 @@ class TeacherWindow(QMainWindow):
         title = QLabel(f"Все события · {len(session.events)}")
         title.setObjectName("section")
         events_layout.addWidget(title)
-        event_table = QTableWidget(len(session.events), 6)
+        event_table = QTableWidget(len(session.events), 7)
         event_table.setHorizontalHeaderLabels((
             "Время", "Нарушение", "Вес", "Длительность", "Источник", "Ложное срабатывание",
+            "Кадр",
         ))
+        event_table.setIconSize(QSize(112, 63))
         event_table.verticalHeader().setVisible(False)
         event_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         event_table.verticalHeader().setMinimumSectionSize(40)
@@ -500,7 +516,7 @@ class TeacherWindow(QMainWindow):
             values = (
                 stored.event.occurred_at.astimezone().strftime("%H:%M:%S"),
                 _event_name(stored) + (" · разрешено" if is_allowed else ""),
-                f"+{stored.weight:g}",
+                weight_label(stored),
                 f"{duration:.1f} с" if duration is not None else "—",
                 stored.event.source,
             )
@@ -518,11 +534,26 @@ class TeacherWindow(QMainWindow):
                 else Qt.CheckState.Unchecked
             )
             event_table.setItem(row, 5, flag)
+            frame_cell = QTableWidgetItem()
+            frame_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            frame_cell.setToolTip("Нажмите, чтобы открыть кадр")
+            if stored.screenshot_path:
+                frame_cell.setIcon(QIcon(self._frame_pixmap(stored).scaled(
+                    QSize(224, 126), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )))
+            else:
+                frame_cell.setText("нет кадра")
+            event_table.setItem(row, 6, frame_cell)
+            event_table.setRowHeight(row, 72)
         event_table.blockSignals(False)
+        event_table.cellClicked.connect(
+            lambda row, column: self._open_event_frame(session, row, column)
+        )
         event_table.itemChanged.connect(
             lambda item: self._event_flag_changed(session, item)
         )
-        event_table.setMinimumHeight(min(450, max(140, 60 * (len(session.events) + 1))))
+        event_table.setMinimumHeight(min(520, max(160, 76 * (len(session.events) + 1))))
         events_layout.addWidget(event_table)
         root.addWidget(events_card)
 
@@ -580,6 +611,68 @@ class TeacherWindow(QMainWindow):
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "Нет кадра")
         painter.end()
         return pixmap
+
+    def _rules_card(self, session: Session, findings: tuple[Finding, ...]) -> QFrame:
+        """Each fired rule as a card: what it means and the frames it is built on."""
+        card, layout = _card()
+        title = QLabel(f"Сработавшие правила · {len(findings)}")
+        title.setObjectName("section")
+        layout.addWidget(title)
+        hint = QLabel(
+            "Одиночный сигнал — только наблюдение. Правило срабатывает на сочетание "
+            "событий во времени; ниже — события, из которых оно сложилось."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        by_id = {stored.event.event_id: stored for stored in session.events}
+        for finding in findings:
+            box = QFrame()
+            violation = finding.level == VIOLATION
+            accent = CRITICAL_TEXT if violation else WARNING_TEXT
+            box.setStyleSheet(
+                f"QFrame {{ border-left: 4px solid {accent}; background: #F9FAFB;"
+                " border-radius: 8px; } QLabel { border: 0; background: transparent; }"
+            )
+            inner = QVBoxLayout(box)
+            inner.setContentsMargins(14, 10, 14, 10)
+            level = "Признаки нарушения" if violation else "Подозрительно"
+            name = QLabel(f"{finding.rule_id} · {finding.title}  —  {level}")
+            name.setStyleSheet(f"font-size:16px; font-weight:700; color:{accent};")
+            inner.addWidget(name)
+            explanation = QLabel(finding.explanation.capitalize())
+            explanation.setWordWrap(True)
+            inner.addWidget(explanation)
+            frames = QHBoxLayout()
+            shown = [by_id[event_id] for event_id in finding.event_ids if event_id in by_id]
+            for stored in shown[:4]:
+                pixmap = self._frame_pixmap(stored)
+                button = QToolButton()
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+                button.setIcon(QIcon(pixmap))
+                button.setIconSize(QSize(160, 90))
+                button.setFixedSize(186, 140)
+                button.setText(
+                    f"{MOMENT_LABELS.get(stored.event.type.value, _event_name(stored))}\n"
+                    f"{stored.event.occurred_at.astimezone():%H:%M:%S}"
+                )
+                button.setToolTip(_event_name(stored))
+                button.clicked.connect(
+                    lambda checked=False, item=stored, image=pixmap:
+                    ImageDialog(_event_name(item), image, self).exec()
+                )
+                frames.addWidget(button)
+            if len(shown) > 4:
+                frames.addWidget(QLabel(f"и ещё {len(shown) - 4}"))
+            frames.addStretch()
+            inner.addLayout(frames)
+            layout.addWidget(box)
+        return card
+
+    def _open_event_frame(self, session: Session, row: int, column: int) -> None:
+        if column != 6 or not 0 <= row < len(session.events):
+            return
+        stored = session.events[row]
+        ImageDialog(_event_name(stored), self._frame_pixmap(stored), self).exec()
 
     def _event_flag_changed(self, session: Session, item: QTableWidgetItem) -> None:
         if item.column() != 5:

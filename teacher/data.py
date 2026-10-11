@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from config import RISK_TYPE_CAPS
+
 from config import RISK_RED_ABOVE, RISK_YELLOW_FROM
 from core.risk import RiskScorer
 from core.storage import StoredEvent
@@ -198,6 +200,13 @@ def recalculate_risk(session: Session, false_positive_ids: Iterable[str] = ()) -
         clock[0] = max(clock[0], stored.event.occurred_at.timestamp())
         scorer.add(stored.event)
     return scorer.peak().total
+
+
+def weight_label(stored: StoredEvent) -> str:
+    """Contribution to risk; a zero after the type's session limit says so."""
+    if stored.weight == 0 and stored.event.type.value in RISK_TYPE_CAPS:
+        return "+0 · лимит типа"
+    return f"+{stored.weight:g}"
 
 
 def risk_zone(score: float) -> str:
