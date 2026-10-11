@@ -6,7 +6,9 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+import base64
+
+from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -51,7 +53,8 @@ from .data import (
     summarize_events,
     weight_label,
 )
-from .rules import VIOLATION, Finding, evaluate_rules
+from .live import INFO, Alert, LiveServer, local_addresses
+from .rules import LEVEL_TITLES, SUSPICIOUS, VIOLATION, Finding, evaluate_rules
 from ui.theme import (
     CRITICAL,
     CRITICAL_TEXT,
@@ -198,11 +201,80 @@ class ImageDialog(QDialog):
         root.addWidget(label)
 
 
+TOAST_SECONDS = 12
+MAX_TOASTS = 3
+TOAST_COLORS = {VIOLATION: CRITICAL_TEXT, SUSPICIOUS: WARNING_TEXT, INFO: MUTED}
+
+
+def _pixmap_from_base64(value: str | None) -> QPixmap | None:
+    if not value:
+        return None
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        return None
+    pixmap = QPixmap()
+    return pixmap if pixmap.loadFromData(QByteArray(data)) else None
+
+
+class AlertToast(QFrame):
+    """Всплывающее уведомление в правом верхнем углу; закрывается по щелчку."""
+
+    def __init__(self, alert: Alert, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.alert = alert
+        color = TOAST_COLORS.get(alert.level, MUTED)
+        self.setObjectName("toast")
+        self.setStyleSheet(
+            "QFrame#toast { background: #FFFFFF; border: 1px solid #E5E7EB;"
+            f" border-left: 6px solid {color}; border-radius: 10px; }}"
+            " QLabel { border: 0; background: transparent; }"
+        )
+        self.setFixedWidth(420)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+        pixmap = _pixmap_from_base64(alert.thumbnail)
+        if pixmap is not None:
+            picture = QLabel()
+            picture.setPixmap(pixmap.scaled(
+                QSize(120, 90), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+            layout.addWidget(picture, 0, Qt.AlignmentFlag.AlignTop)
+        when = alert.occurred_at.astimezone().strftime("%H:%M:%S")
+        level = LEVEL_TITLES.get(alert.level)
+        headline = f"{level} · {alert.rule_id}" if level else alert.title
+        self.text_label = QLabel(
+            f"<b style='color:{color}'>{escape(headline)}</b>"
+            f" <span style='color:{MUTED}'>{when}</span><br>"
+            + (f"<b>{escape(alert.title)}</b><br>" if level else "")
+            + escape(alert.text)
+        )
+        self.text_label.setWordWrap(True)
+        self.text_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.text_label, 1)
+        self.setToolTip("Щёлкните, чтобы закрыть")
+        # The timer is a child: it disappears with the toast if that is closed first.
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.close)
+        self._timer.start(TOAST_SECONDS * 1000)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        # Deleted later by the window, which still holds a reference to it.
+        self.close()
+
+
 class TeacherWindow(QMainWindow):
     """Список сессий и подробный просмотр в одном окне."""
 
-    def __init__(self, database_path: Path, reviews_path: Path) -> None:
+    def __init__(
+        self, database_path: Path, reviews_path: Path, live_server: LiveServer | None = None
+    ) -> None:
         super().__init__()
+        self.live_server = live_server
+        self._toasts: list[AlertToast] = []
         # Qt offscreen на Windows иногда не видит системные шрифты сам.
         if not QFontDatabase.families():
             for path in (Path("C:/Windows/Fonts/segoeui.ttf"),
@@ -231,6 +303,12 @@ class TeacherWindow(QMainWindow):
         self.sessions_page = self._build_sessions_page()
         self.pages.addWidget(self.sessions_page)
         self.reload_sessions()
+        if self.live_server is not None:
+            self._refresh_live_table()
+            self.live_timer = QTimer(self)
+            self.live_timer.timeout.connect(self._poll_live)
+            self.live_timer.start(500)
+            self._live_ticks = 0
 
     def _build_sessions_page(self) -> QWidget:
         page = QWidget()
@@ -265,6 +343,8 @@ class TeacherWindow(QMainWindow):
         self.database_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         summary_layout.addWidget(self.database_label)
         root.addWidget(summary_card)
+        if self.live_server is not None:
+            root.addWidget(self._build_live_card())
 
         filters = QHBoxLayout()
         self.review_filter = QCheckBox("Только требующие проверки")
@@ -288,6 +368,106 @@ class TeacherWindow(QMainWindow):
         hint.setObjectName("eyebrow")
         root.addWidget(hint)
         return page
+
+    def _build_live_card(self) -> QFrame:
+        card, layout = _card()
+        title = QLabel("Идёт экзамен")
+        title.setObjectName("section")
+        layout.addWidget(title)
+        port = self.live_server.port
+        addresses = ", ".join(f"{address}:{port}" for address in local_addresses())
+        self.live_address_label = QLabel(
+            f"Адрес для студентов: {addresses}  ·  в браузере: http://{local_addresses()[0]}:{port}"
+        )
+        self.live_address_label.setObjectName("eyebrow")
+        self.live_address_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.live_address_label)
+        self.live_table = QTableWidget(0, 4)
+        self.live_table.setHorizontalHeaderLabels(
+            ("Студент", "Статус", "Риск", "Последнее правило")
+        )
+        self.live_table.verticalHeader().setVisible(False)
+        self.live_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.live_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        header = self.live_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.live_table.setMaximumHeight(190)
+        layout.addWidget(self.live_table)
+        self.live_empty_label = QLabel("Пока никто не начал тест")
+        self.live_empty_label.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(self.live_empty_label)
+        return card
+
+    def _refresh_live_table(self) -> None:
+        sessions = self.live_server.board.sessions()
+        self.live_table.setRowCount(0)
+        for live in sessions:
+            row = self.live_table.rowCount()
+            self.live_table.insertRow(row)
+            status = live.status()
+            values = (live.display_name, status, f"{live.risk:.0f}", live.last_alert or "—")
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column == 2:
+                    cell.setForeground(QColor(_risk_color(live.risk)))
+                if column == 3 and live.worst_level:
+                    cell.setForeground(QColor(TOAST_COLORS[live.worst_level]))
+                if column == 1 and status == "Нет связи":
+                    cell.setForeground(QColor(WARNING_TEXT))
+                self.live_table.setItem(row, column, cell)
+        self.live_table.setVisible(bool(sessions))
+        self.live_empty_label.setVisible(not sessions)
+
+    def _poll_live(self) -> None:
+        """Забирает уведомления из сервера; статусы обновляет раз в 5 секунд."""
+        alerts = self.live_server.drain()
+        self._live_ticks += 1
+        changed = self.live_server.changed.is_set()
+        self.live_server.changed.clear()
+        for alert in alerts:
+            if alert.title == "Начал тест":
+                continue
+            self._show_toast(alert)
+        if any(alert.level == VIOLATION for alert in alerts):
+            QApplication.beep()
+        if changed or alerts or self._live_ticks % 10 == 0:
+            self._refresh_live_table()
+        if any(alert.title == "Завершил тест" for alert in alerts):
+            # Если студент сдавал на этом же компьютере, сессия уже в журнале.
+            self.reload_sessions()
+
+    def _drop_closed_toasts(self) -> None:
+        for toast in self._toasts:
+            if not toast.isVisible():
+                toast.deleteLater()
+        self._toasts = [toast for toast in self._toasts if toast.isVisible()]
+
+    def _show_toast(self, alert: Alert) -> None:
+        self._drop_closed_toasts()
+        while len(self._toasts) >= MAX_TOASTS:
+            oldest = self._toasts.pop(0)
+            oldest.close()
+            oldest.deleteLater()
+        toast = AlertToast(alert, self)
+        toast.show()
+        toast.raise_()
+        self._toasts.append(toast)
+        self._place_toasts()
+
+    def _place_toasts(self) -> None:
+        self._drop_closed_toasts()
+        y = 16
+        for toast in reversed(self._toasts):
+            toast.adjustSize()
+            toast.move(self.width() - toast.width() - 20, y)
+            y += toast.height() + 10
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._place_toasts()
 
     def reload_sessions(self) -> None:
         """Обновляет список, не меняя исходный журнал."""

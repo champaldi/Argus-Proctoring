@@ -54,6 +54,7 @@ from ui.theme import (
     window_title,
 )
 from core.detectors import DetectorCollection, ModuleStatus
+from core.live import LiveReporter
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
 from core.storage import (
@@ -421,12 +422,15 @@ class MainWindow(QMainWindow):
         self.bridge = UiBridge()
         self.bridge.event_recorded.connect(self._on_event_recorded)
         self.bridge.pipeline_error.connect(self._show_runtime_error)
+        # Live copy of events for the teacher panel, only when its address is set.
+        self.live = LiveReporter.from_env(config.data_dir)
         self.pipeline = EventPipeline(
             config.database_path,
             config.screenshots_dir,
             on_recorded=self.bridge.event_recorded.emit,
             on_error=self.bridge.pipeline_error.emit,
             metadata=session_metadata(student_name),
+            live=self.live,
         )
         self.pipeline.start()
 
@@ -514,16 +518,17 @@ class MainWindow(QMainWindow):
         self.check_security_label = QLabel()
         self.check_models_label = QLabel()
         self.check_camera_label = QLabel()
-        for label in (
-            self.check_security_label,
-            self.check_models_label,
-            self.check_camera_label,
-        ):
+        self.check_teacher_label = QLabel()
+        labels = [self.check_security_label, self.check_models_label, self.check_camera_label]
+        if self.live is not None:
+            labels.append(self.check_teacher_label)
+        for label in labels:
             label.setObjectName("status")
             layout.addWidget(label)
         self._set_check(self.check_security_label, "Защита: включается…", None)
         self._set_check(self.check_models_label, "Модели: загрузка…", None)
         self._set_check(self.check_camera_label, "Камера: ожидание…", None)
+        self._set_check(self.check_teacher_label, "Связь с преподавателем: подключение…", None)
         layout.addStretch(1)
 
         buttons = QHBoxLayout()
@@ -855,6 +860,21 @@ class MainWindow(QMainWindow):
     def _refresh_risk(self) -> None:
         if not self._shutdown_done:
             self._update_risk_display(self.pipeline.current_risk().total)
+            self._refresh_teacher_link()
+
+    def _refresh_teacher_link(self) -> None:
+        """The test never waits for the network: the link is shown, not required."""
+        if self.live is None:
+            return
+        if self.live.connected:
+            self._set_check(self.check_teacher_label, "Связь с преподавателем есть", True)
+        elif self.live.connected is False:
+            self._set_check(
+                self.check_teacher_label,
+                "Нет связи с преподавателем, события отправятся позже",
+                False,
+            )
+            self.check_teacher_label.setToolTip(f"{self.live.url}\n{self.live.last_error}")
 
     def _on_event_recorded(self, stored: StoredEvent) -> None:
         data = stored.to_dict()

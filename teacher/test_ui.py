@@ -96,6 +96,45 @@ class TeacherUiTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_live_alert_appears_in_table_and_toast(self) -> None:
+        from teacher.live import LiveBoard, LiveServer
+
+        server = LiveServer(LiveBoard(), host="127.0.0.1", port=0)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            window = TeacherWindow(root / "missing.db", root / "reviews.db", live_server=server)
+            try:
+                window.show()
+                self.assertFalse(window.live_table.isVisible())
+                self.assertIn(str(server.port), window.live_address_label.text())
+                base = {"session_id": "s1", "student": "Карим",
+                        "started_at": "2026-10-16T10:00:00+00:00"}
+                event = ProctorEvent.create("phone_aimed_at_screen", source="test")
+                for message in (
+                    {**base, "kind": "start"},
+                    {**base, "kind": "event", "event": event.to_dict(), "weight": 45,
+                     "risk_total": 45, "thumbnail": "bm90IGEganBlZw=="},
+                ):
+                    for alert in server.board.apply(message):
+                        server.alerts.put(alert)
+                server.changed.set()
+                window._poll_live()
+                self.app.processEvents()
+                self.assertEqual(window.live_table.rowCount(), 1)
+                self.assertEqual(window.live_table.item(0, 0).text(), "Карим")
+                self.assertEqual(window.live_table.item(0, 2).text(), "45")
+                self.assertIn("V1", window.live_table.item(0, 3).text())
+                self.assertEqual(len(window._toasts), 1)  # «Начал тест» без всплывашки
+                self.assertIn("Фотографирование экрана", window._toasts[0].text_label.text())
+                for alert in server.board.apply({**base, "kind": "finish", "final_risk": 45}):
+                    server.alerts.put(alert)
+                window._poll_live()
+                self.assertEqual(window.live_table.item(0, 1).text(), "Завершил")
+                self.assertEqual(len(window._toasts), 2)
+            finally:
+                window.close()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

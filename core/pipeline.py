@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from events import EventType, ProctorEvent
 
+from .live import LiveReporter
 from .risk import RiskScorer, RiskSnapshot
 from .storage import EventStore, StoredEvent
 
@@ -72,6 +73,7 @@ class EventPipeline:
         scorer: RiskScorer | None = None,
         queue_size: int = 256,
         metadata: dict[str, Any] | None = None,
+        live: LiveReporter | None = None,
     ) -> None:
         self.session_id = uuid4().hex
         self.metadata: dict[str, Any] = {"application": "proctoring", **(metadata or {})}
@@ -79,6 +81,7 @@ class EventPipeline:
         self.screenshots_dir = screenshots_dir
         self.on_recorded = on_recorded
         self.on_error = on_error
+        self.live = live
         self.cooldowns = dict(DEFAULT_COOLDOWNS if cooldowns is None else cooldowns)
         self._queue: queue.Queue[_QueuedEvent | _ReferenceFrame | None] = queue.Queue(
             queue_size
@@ -185,6 +188,10 @@ class EventPipeline:
             self._ready.set()
             return
 
+        if self.live is not None:
+            self.live.start()
+            self.live.session_started(self.session_id, self.metadata)
+
         self._ready.set()
         try:
             while True:
@@ -215,14 +222,17 @@ class EventPipeline:
                     )
                     if self.on_recorded is not None:
                         self.on_recorded(stored)
+                    if self.live is not None:
+                        self.live.event_recorded(self.session_id, stored)
                 except Exception as exc:
                     self._report_error(f"Ошибка записи события: {type(exc).__name__}: {exc}")
                 finally:
                     self._queue.task_done()
         finally:
-            store.finish_session(
-                self.session_id,
-                final_risk=self._scorer.current().total,
-            )
+            final_risk = self._scorer.current().total
+            store.finish_session(self.session_id, final_risk=final_risk)
             store.close()
+            if self.live is not None:
+                self.live.session_finished(self.session_id, final_risk)
+                self.live.close()
 
