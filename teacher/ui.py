@@ -214,6 +214,10 @@ class TeacherWindow(QMainWindow):
                         QApplication.instance().setFont(QFont(families[0], 10))
                         break
         self.database_path = database_path
+        # Frames are read from disk once; the session page is rebuilt on every
+        # mark or condition change and would otherwise reload every image.
+        self._pixmaps: dict[str, QPixmap] = {}
+        self._thumbnails: dict[str, QIcon] = {}
         self.reviews = ReviewStore(reviews_path)
         self.sessions: list[Session] = []
         self.review_values: dict[str, Review] = {}
@@ -538,10 +542,7 @@ class TeacherWindow(QMainWindow):
             frame_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
             frame_cell.setToolTip("Нажмите, чтобы открыть кадр")
             if stored.screenshot_path:
-                frame_cell.setIcon(QIcon(self._frame_pixmap(stored).scaled(
-                    QSize(224, 126), Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )))
+                frame_cell.setIcon(self._thumbnail(stored))
             else:
                 frame_cell.setText("нет кадра")
             event_table.setItem(row, 6, frame_cell)
@@ -595,6 +596,25 @@ class TeacherWindow(QMainWindow):
         self.pages.setCurrentWidget(page)
 
     def _frame_pixmap(self, stored: StoredEvent) -> QPixmap:
+        key = stored.event.event_id
+        cached = self._pixmaps.get(key)
+        if cached is None:
+            cached = self._load_frame(stored)
+            self._pixmaps[key] = cached
+        return cached
+
+    def _thumbnail(self, stored: StoredEvent) -> QIcon:
+        key = stored.event.event_id
+        icon = self._thumbnails.get(key)
+        if icon is None:
+            icon = QIcon(self._frame_pixmap(stored).scaled(
+                QSize(224, 126), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+            self._thumbnails[key] = icon
+        return icon
+
+    def _load_frame(self, stored: StoredEvent) -> QPixmap:
         if stored.screenshot_path:
             path = Path(stored.screenshot_path)
             # Older EventStore versions wrote paths relative to the launch CWD;
@@ -648,7 +668,7 @@ class TeacherWindow(QMainWindow):
                 pixmap = self._frame_pixmap(stored)
                 button = QToolButton()
                 button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-                button.setIcon(QIcon(pixmap))
+                button.setIcon(self._thumbnail(stored))
                 button.setIconSize(QSize(160, 90))
                 button.setFixedSize(186, 140)
                 button.setText(

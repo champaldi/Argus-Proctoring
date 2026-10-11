@@ -115,6 +115,12 @@ def _duration_text(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+# Frames in the report are shown at most this wide; full-size camera frames
+# would make a long session's report tens of megabytes.
+REPORT_FRAME_WIDTH = 480
+REPORT_JPEG_QUALITY = 80
+
+
 def _image_data_uri(path: Path | None) -> str | None:
     if path is None:
         return None
@@ -124,8 +130,31 @@ def _image_data_uri(path: Path | None) -> str | None:
         return None
     if not payload:
         return None
-    kind = "png" if path.suffix.lower() == ".png" else "jpeg"
+    payload, kind = _shrink(payload, path.suffix.lower())
     return f"data:image/{kind};base64,{base64.b64encode(payload).decode('ascii')}"
+
+
+def _shrink(payload: bytes, suffix: str) -> tuple[bytes, str]:
+    """Downscale a frame for the report; keep the original if OpenCV is missing."""
+    kind = "png" if suffix == ".png" else "jpeg"
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return payload, kind
+    image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return payload, kind
+    height, width = image.shape[:2]
+    if width > REPORT_FRAME_WIDTH:
+        image = cv2.resize(
+            image, (REPORT_FRAME_WIDTH, max(1, round(height * REPORT_FRAME_WIDTH / width))),
+            interpolation=cv2.INTER_AREA,
+        )
+    ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, REPORT_JPEG_QUALITY])
+    if not ok or len(encoded) >= len(payload):
+        return payload, kind
+    return encoded.tobytes(), "jpeg"
 
 
 def _event_title(stored: StoredEvent) -> str:
