@@ -102,12 +102,16 @@ class TeacherUiTests(unittest.TestCase):
                 window.close()
 
     def test_live_alert_appears_in_table_and_toast(self) -> None:
+        from teacher.archive import SessionArchive
         from teacher.live import LiveBoard, LiveServer
 
-        server = LiveServer(LiveBoard(), host="127.0.0.1", port=0)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            window = TeacherWindow(root / "missing.db", root / "reviews.db", live_server=server)
+            archive = SessionArchive(root / "proctoring.db")
+            server = LiveServer(LiveBoard(), host="127.0.0.1", port=0, archive=archive)
+            window = TeacherWindow(
+                root / "proctoring.db", root / "reviews.db", live_server=server
+            )
             try:
                 window.show()
                 self.assertFalse(window.live_table.isVisible())
@@ -120,10 +124,14 @@ class TeacherUiTests(unittest.TestCase):
                     {**base, "kind": "event", "event": event.to_dict(), "weight": 45,
                      "risk_total": 45, "thumbnail": "bm90IGEganBlZw=="},
                 ):
+                    archive.record(message)
                     for alert in server.board.apply(message):
                         server.alerts.put(alert)
                 server.changed.set()
-                window._poll_live()
+                server.archived.set()
+                self.assertEqual(window.table.rowCount(), 0)
+                for _ in range(4):  # журнал перечитывается раз в 4 тика
+                    window._poll_live()
                 self.app.processEvents()
                 self.assertEqual(window.live_table.rowCount(), 1)
                 self.assertEqual(window.live_table.item(0, 0).text(), "Карим")
@@ -131,6 +139,9 @@ class TeacherUiTests(unittest.TestCase):
                 self.assertIn("V1", window.live_table.item(0, 3).text())
                 self.assertEqual(len(window._toasts), 1)  # «Начал тест» без всплывашки
                 self.assertIn("Фотографирование экрана", window._toasts[0].text_label.text())
+                # Сессия с другого ноутбука появилась в общей таблице сессий.
+                self.assertEqual(window.table.rowCount(), 1)
+                self.assertEqual(window.table.item(0, 0).text(), "Карим")
                 for alert in server.board.apply({**base, "kind": "finish", "final_risk": 45}):
                     server.alerts.put(alert)
                 window._poll_live()

@@ -386,7 +386,7 @@ class TeacherWindow(QMainWindow):
         layout.addWidget(self.live_address_label)
         self.live_table = QTableWidget(0, 4)
         self.live_table.setHorizontalHeaderLabels(
-            ("Студент", "Статус", "Риск", "Последнее правило")
+            ("Студент", "Статус", "Риск", "Главное правило")
         )
         self.live_table.verticalHeader().setVisible(False)
         self.live_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -408,7 +408,7 @@ class TeacherWindow(QMainWindow):
             row = self.live_table.rowCount()
             self.live_table.insertRow(row)
             status = live.status()
-            values = (live.display_name, status, f"{live.risk:.0f}", live.last_alert or "—")
+            values = (live.display_name, status, f"{live.risk:.0f}", live.rule_summary or "—")
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
                 if column == 2:
@@ -435,9 +435,12 @@ class TeacherWindow(QMainWindow):
             QApplication.beep()
         if changed or alerts or self._live_ticks % 10 == 0:
             self._refresh_live_table()
-        if any(alert.title == "Завершил тест" for alert in alerts):
-            # Если студент сдавал на этом же компьютере, сессия уже в журнале.
-            self.reload_sessions()
+        # Журнал на диске пополнился: перечитываем таблицу сессий не чаще раза
+        # в 2 секунды и только на её странице, чтобы не мешать разбору сессии.
+        if self.live_server.archived.is_set() and self._live_ticks % 4 == 0:
+            if self.pages.currentIndex() == 0:
+                self.live_server.archived.clear()
+                self.reload_sessions()
 
     def _drop_closed_toasts(self) -> None:
         for toast in self._toasts:

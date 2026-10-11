@@ -201,7 +201,9 @@ class EventPipeline:
                     break
                 if isinstance(queued, _ReferenceFrame):
                     try:
-                        store.save_reference_photo(self.session_id, queued.frame)
+                        path = store.save_reference_photo(self.session_id, queued.frame)
+                        if self.live is not None:
+                            self.live.reference_saved(self.session_id, path)
                     except Exception as exc:
                         # Allow another attempt with a later frame.
                         self._reference_requested = False

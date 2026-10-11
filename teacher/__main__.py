@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import os
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from ui.theme import APP_NAME
 
 from config import AppConfig
 
+from .archive import SessionArchive
 from .live import DEFAULT_PORT, LiveBoard, LiveServer
 from .seed_demo import DEMO_DIR
 from .ui import TeacherWindow
@@ -42,14 +44,16 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     if args.live:
         try:
+            # Сессии с других ноутбуков пишутся в ту же базу, что читает панель.
             server = LiveServer(
-                LiveBoard(), port=args.port, token=os.getenv("PROCTOR_LIVE_TOKEN") or None
+                LiveBoard(), port=args.port, token=os.getenv("PROCTOR_LIVE_TOKEN") or None,
+                archive=SessionArchive(database), reviews_path=reviews,
             )
             server.start()
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             QMessageBox.warning(
                 None, "Живой режим не запущен",
-                f"Порт {args.port} занят или недоступен: {exc}\n"
+                f"Не удалось запустить приём на порту {args.port}: {exc}\n"
                 "Панель откроется без живых уведомлений.",
             )
             server = None

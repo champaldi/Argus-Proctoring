@@ -87,7 +87,7 @@ class LiveBoardTests(unittest.TestCase):
         session = board.sessions()[0]
         self.assertEqual(session.risk, 90)
         self.assertEqual(session.worst_level, VIOLATION)
-        self.assertIn("V1", session.last_alert)
+        self.assertIn("V1", session.rule_summary)
 
     def test_repeated_delivery_is_ignored(self):
         board = LiveBoard()

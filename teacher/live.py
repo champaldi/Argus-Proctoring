@@ -22,20 +22,33 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
+from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
 
 from core.event_presentation import EVENT_LABELS
 from core.live import LIVE_PATH, TOKEN_HEADER
 from core.storage import StoredEvent
 from events import normalize_events
 
-from .data import Session, risk_zone
+from .archive import SessionArchive
+from .data import (
+    VERDICT_LABELS,
+    ReviewStore,
+    Session,
+    current_verdict,
+    excluded_event_ids,
+    load_sessions,
+    recalculate_risk,
+    risk_zone,
+)
 from .rules import LEVEL_TITLES, SUSPICIOUS, VIOLATION, evaluate_rules
 
 DEFAULT_PORT = 8765
 MAX_BODY = 2 * 1024 * 1024
 OFFLINE_AFTER_SECONDS = 45.0
 FEED_SIZE = 50
+# Кадры в памяти для уведомлений; полный набор лежит в журнале на диске.
+MAX_THUMBNAILS_PER_SESSION = 60
 INFO = "info"
 
 
@@ -72,8 +85,17 @@ class LiveSession:
     events: list[StoredEvent] = field(default_factory=list)
     thumbnails: dict[str, str] = field(default_factory=dict)
     alerted_rules: set[str] = field(default_factory=set)
-    last_alert: str = ""
+    main_rule: str = ""  # самое серьёзное из сработавших правил
     worst_level: str = ""
+    rule_count: int = 0
+
+    @property
+    def rule_summary(self) -> str:
+        """«V6 · Подмена… (+2)»: главное правило и сколько ещё сработало."""
+        if not self.main_rule:
+            return ""
+        extra = self.rule_count - 1
+        return f"{self.main_rule} (+{extra})" if extra > 0 else self.main_rule
 
     @property
     def display_name(self) -> str:
@@ -112,7 +134,7 @@ class LiveBoard:
         """Учитывает одно сообщение студента и возвращает новые уведомления."""
         kind = message.get("kind")
         session_id = str(message.get("session_id") or "").strip()
-        if kind not in {"start", "event", "finish", "ping"} or not session_id:
+        if kind not in {"start", "event", "finish", "ping", "reference"} or not session_id:
             raise ValueError("unknown live message")
         now = datetime.now(timezone.utc)
         with self._lock:
@@ -146,8 +168,10 @@ class LiveBoard:
                 live.risk = float(message["risk_total"])
             for alert in alerts:
                 if alert.level != INFO:
-                    live.last_alert = f"{alert.rule_id} · {alert.title}"
-                    if alert.level == VIOLATION or not live.worst_level:
+                    live.rule_count = len(live.alerted_rules)
+                    upgrade = alert.level == VIOLATION and live.worst_level != VIOLATION
+                    if upgrade or not live.main_rule:
+                        live.main_rule = f"{alert.rule_id} · {alert.title}"
                         live.worst_level = alert.level
             self._feed = (alerts[::-1] + self._feed)[:FEED_SIZE]
             return alerts
@@ -174,6 +198,8 @@ class LiveBoard:
         thumbnail = message.get("thumbnail")
         if isinstance(thumbnail, str) and thumbnail:
             live.thumbnails[event.event_id] = thumbnail
+            while len(live.thumbnails) > MAX_THUMBNAILS_PER_SESSION:
+                live.thumbnails.pop(next(iter(live.thumbnails)))
 
         alerts = []
         for finding in evaluate_rules(live.as_session()):
@@ -200,8 +226,8 @@ class LiveBoard:
                 LiveSession(
                     session_id=item.session_id, student=item.student,
                     started_at=item.started_at, risk=item.risk, finished=item.finished,
-                    last_seen=item.last_seen, last_alert=item.last_alert,
-                    worst_level=item.worst_level,
+                    last_seen=item.last_seen, main_rule=item.main_rule,
+                    worst_level=item.worst_level, rule_count=item.rule_count,
                 )
                 for item in self._sessions.values()
             ]
@@ -232,15 +258,67 @@ def local_addresses() -> list[str]:
                 found.append(address)
     except OSError:
         pass
-    return [address for address in found if not address.startswith("127.")] or ["127.0.0.1"]
+    usable = [address for address in found if _is_student_reachable(address)]
+    # Основной адрес сети первым, затем Tailscale; виртуальные адаптеры не нужны.
+    primary = usable[:1]
+    tailscale = [address for address in usable if _is_tailscale(address)]
+    result = list(dict.fromkeys(primary + tailscale))
+    return result or ["127.0.0.1"]
+
+
+def _is_tailscale(address: str) -> bool:
+    """Tailscale раздаёт адреса из 100.64.0.0/10."""
+    parts = address.split(".")
+    return len(parts) == 4 and parts[0] == "100" and 64 <= int(parts[1]) <= 127
+
+
+def _is_student_reachable(address: str) -> bool:
+    parts = address.split(".")
+    if len(parts) != 4 or not all(part.isdigit() for part in parts):
+        return False
+    if parts[0] in {"127", "169"} or parts[3] in {"0", "255"}:
+        return False  # петля, APIPA и адреса сетей виртуальных адаптеров
+    # VirtualBox и VMware Host-Only: студенты сюда не подключатся.
+    return not address.startswith(("192.168.56.", "192.168.99."))
 
 
 _LEVEL_COLORS = {VIOLATION: "#B91C1C", SUSPICIOUS: "#B45309", INFO: "#374151"}
 _ZONE_COLORS = {"high": "#B91C1C", "medium": "#B45309", "low": "#15803D"}
 
 
-def render_page(board: LiveBoard) -> str:
-    """Страница для браузера или телефона преподавателя, обновляется сама."""
+def _token_query(token: str | None) -> str:
+    return f"?token={quote(token)}" if token else ""
+
+
+def _journal_rows(
+    sessions: list[Session], reviews: ReviewStore | None, token: str | None
+) -> list[str]:
+    values = reviews.load_all() if reviews is not None else {}
+    rows = []
+    for session in sessions:
+        review = values.get(session.id)
+        score = recalculate_risk(session, excluded_event_ids(session, review))
+        color = _ZONE_COLORS[risk_zone(score)]
+        verdict = VERDICT_LABELS[current_verdict(session, review)].capitalize()
+        link = f"/report/{quote(session.id)}{_token_query(token)}"
+        rows.append(
+            "<tr>"
+            f"<td><a href='{link}'>{html.escape(session.student_name)}</a></td>"
+            f"<td>{session.started_at.astimezone():%d.%m %H:%M}</td>"
+            f"<td style='color:{color};font-weight:700'>{score:.0f}</td>"
+            f"<td>{html.escape(verdict)}</td>"
+            "</tr>"
+        )
+    return rows
+
+
+def render_page(
+    board: LiveBoard,
+    sessions: list[Session] | None = None,
+    reviews: ReviewStore | None = None,
+    token: str | None = None,
+) -> str:
+    """Страница для браузера или телефона: идёт экзамен, уведомления, журнал."""
     rows = []
     for item in board.sessions():
         color = _ZONE_COLORS[risk_zone(item.risk)]
@@ -249,11 +327,11 @@ def render_page(board: LiveBoard) -> str:
             f"<td>{html.escape(item.display_name)}</td>"
             f"<td>{html.escape(item.status())}</td>"
             f"<td style='color:{color};font-weight:700'>{item.risk:.0f}</td>"
-            f"<td>{html.escape(item.last_alert or '—')}</td>"
+            f"<td>{html.escape(item.rule_summary or '—')}</td>"
             "</tr>"
         )
     alerts = []
-    for alert in board.feed()[:20]:
+    for alert in board.feed()[:10]:
         color = _LEVEL_COLORS.get(alert.level, "#374151")
         level = LEVEL_TITLES.get(alert.level, "")
         picture = (
@@ -268,21 +346,32 @@ def render_page(board: LiveBoard) -> str:
             f"{html.escape(alert.title if level else '')}"
             f"{'<br>' if level else ''}{html.escape(alert.text)}</div></div>"
         )
+    journal = ""
+    if sessions is not None:
+        journal_rows = _journal_rows(sessions, reviews, token)
+        journal = (
+            "<h2>Журнал сессий</h2><p class='time'>Имя открывает полный отчёт с кадрами</p>"
+            "<table><tr><th>Студент</th><th>Начало</th><th>Риск</th><th>Решение</th></tr>"
+            + ("".join(journal_rows) or "<tr><td colspan='4'>Сессий пока нет</td></tr>")
+            + "</table>"
+        )
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="3"><title>Argus · Идёт экзамен</title>
+<meta http-equiv="refresh" content="5"><title>Argus · Идёт экзамен</title>
 <style>
 body{{font-family:Inter,Segoe UI,Arial,sans-serif;margin:16px;background:#F8F9FA;color:#1F2937}}
 h1{{font-size:20px;margin:0 0 12px}} h2{{font-size:16px;margin:20px 0 8px}}
 table{{width:100%;border-collapse:collapse;background:#fff}}
 td,th{{padding:8px;border-bottom:1px solid #E5E7EB;text-align:left;font-size:14px}}
+a{{color:#1E3A8A}}
 .alert{{display:flex;gap:10px;background:#fff;border-left:4px solid;padding:8px;margin:6px 0;font-size:14px}}
-.alert img{{width:120px;height:auto;border-radius:6px}} .time{{color:#6B7280}}
+.alert img{{width:120px;height:auto;border-radius:6px}} .time{{color:#6B7280;font-size:13px}}
 </style></head><body>
 <h1>Argus · Идёт экзамен</h1>
-<table><tr><th>Студент</th><th>Статус</th><th>Риск</th><th>Последнее правило</th></tr>
-{''.join(rows) or "<tr><td colspan='4'>Пока никто не начал тест</td></tr>"}</table>
+<table><tr><th>Студент</th><th>Статус</th><th>Риск</th><th>Главное правило</th></tr>
+{''.join(rows) or "<tr><td colspan='4'>Сейчас никто не сдаёт тест</td></tr>"}</table>
 <h2>Уведомления</h2>{''.join(alerts) or '<p>Нарушений пока нет</p>'}
+{journal}
 </body></html>"""
 
 
@@ -312,13 +401,23 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._json(200, {"ok": True, "app": "argus-teacher"})
             return
-        if parsed.path == "/":
+        if parsed.path == "/" or parsed.path.startswith("/report/"):
             supplied = parse_qs(parsed.query).get("token", [None])[0]
             if not self._authorized(supplied):
                 self._reply(403, "Нужен ?token=…".encode("utf-8"), "text/plain; charset=utf-8")
                 return
-            page = render_page(self.server.board).encode("utf-8")
-            self._reply(200, page, "text/html; charset=utf-8")
+            try:
+                if parsed.path == "/":
+                    page = self.server.render_index()
+                else:
+                    page = self.server.render_report(parsed.path.removeprefix("/report/"))
+            except Exception as exc:  # noqa: BLE001 — страница не должна ронять сервер
+                self._reply(500, f"Ошибка: {exc}".encode("utf-8"), "text/plain; charset=utf-8")
+                return
+            if page is None:
+                self._reply(404, "Сессия не найдена".encode("utf-8"), "text/plain; charset=utf-8")
+                return
+            self._reply(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return
         self._json(404, {"ok": False})
 
@@ -340,13 +439,23 @@ class _Handler(BaseHTTPRequestHandler):
             message = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(message, dict):
                 raise ValueError("object expected")
+            if message.get("kind") not in {"start", "event", "finish", "ping", "reference"}:
+                raise ValueError("unknown live message")
+            if self.server.archive is not None:
+                # Сначала журнал: если диск или база недоступны, студент повторит.
+                self.server.archive.record(message)
             alerts = self.server.board.apply(message)
         except (ValueError, TypeError, UnicodeDecodeError):
             self._json(400, {"ok": False})
             return
+        except Exception:  # noqa: BLE001 — база занята или нет места: повторить позже
+            self._json(503, {"ok": False})
+            return
         for alert in alerts:
             self.server.alerts.put(alert)
         self.server.changed.set()
+        if self.server.archive is not None and message.get("kind") != "ping":
+            self.server.archived.set()
         self._json(200, {"ok": True})
 
 
@@ -363,17 +472,45 @@ class LiveServer(ThreadingHTTPServer):
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
         token: str | None = None,
+        archive: SessionArchive | None = None,
+        reviews_path: Path | None = None,
     ) -> None:
         super().__init__((host, port), _Handler)
         self.board = board
         self.token = token or None
+        self.archive = archive
+        self.reviews_path = reviews_path
         self.alerts: queue.Queue[Alert] = queue.Queue()
         self.changed = threading.Event()
+        # Журнал на диске изменился: таблица сессий панели перечитывает базу.
+        self.archived = threading.Event()
         self._thread: threading.Thread | None = None
 
     @property
     def port(self) -> int:
         return int(self.server_address[1])
+
+    def _reviews(self) -> ReviewStore | None:
+        return ReviewStore(self.reviews_path) if self.reviews_path is not None else None
+
+    def render_index(self) -> str:
+        sessions = None
+        if self.archive is not None:
+            sessions = load_sessions(self.archive.database_path)
+        return render_page(self.board, sessions, self._reviews(), self.token)
+
+    def render_report(self, session_id: str) -> str | None:
+        if self.archive is None:
+            return None
+        from .report import render_session_report  # noqa: PLC0415
+
+        database = self.archive.database_path
+        session = next((item for item in load_sessions(database) if item.id == session_id), None)
+        if session is None:
+            return None
+        reviews = self._reviews()
+        review = reviews.load_review(session.id) if reviews is not None else None
+        return render_session_report(session, review, database)
 
     def start(self) -> None:
         self._thread = threading.Thread(

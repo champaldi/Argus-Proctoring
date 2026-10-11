@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
@@ -29,8 +30,9 @@ from .storage import StoredEvent
 LIVE_PATH = "/api/live"
 TOKEN_HEADER = "X-Argus-Token"
 URL_FILE_NAME = "teacher_url.txt"
-THUMBNAIL_WIDTH = 320
-THUMBNAIL_QUALITY = 70
+# Кадр события у преподавателя — это и уведомление, и доказательство в журнале.
+THUMBNAIL_WIDTH = 640
+THUMBNAIL_QUALITY = 75
 MAX_QUEUE = 500
 REQUEST_TIMEOUT = 3.0
 RETRY_MIN = 1.0
@@ -91,6 +93,10 @@ def encode_thumbnail(path: str | None) -> str | None:
         return None
 
 
+class RejectedMessage(Exception):
+    """Панель ответила, что сообщение неверное: повтор не поможет."""
+
+
 def _post_json(url: str, payload: Mapping[str, Any], token: str | None) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=body, method="POST")
@@ -99,9 +105,14 @@ def _post_json(url: str, payload: Mapping[str, Any], token: str | None) -> None:
         request.add_header(TOKEN_HEADER, token)
     # Системный прокси не должен перехватывать адрес в локальной сети.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
-        if response.status >= 300:
-            raise OSError(f"HTTP {response.status}")
+    try:
+        with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
+            if response.status >= 300:
+                raise OSError(f"HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in {400, 413}:
+            raise RejectedMessage(f"HTTP {exc.code}") from exc
+        raise
 
 
 class LiveReporter:
@@ -165,6 +176,10 @@ class LiveReporter:
             "_screenshot": stored.screenshot_path,
         })
 
+    def reference_saved(self, session_id: str, path: str) -> None:
+        """Контрольное фото студента — в журнал преподавателя."""
+        self._put({"kind": "reference", "session_id": session_id, "_image_path": path})
+
     def session_finished(self, session_id: str, final_risk: float) -> None:
         self._active_session = None
         self._put({"kind": "finish", "session_id": session_id, "final_risk": final_risk})
@@ -227,8 +242,22 @@ class LiveReporter:
                     message["thumbnail"] = thumbnail
             if "thumbnail" in message:
                 payload["thumbnail"] = message["thumbnail"]
+            if "_image_path" in message and "image" not in message:
+                message["image"] = self._thumbnail(message.get("_image_path")) or ""
+            if message.get("image"):
+                payload["image"] = message["image"]
             try:
                 self._send(self.url, payload, self.token)
+            except RejectedMessage as exc:
+                # Сломанное сообщение не должно навсегда заблокировать очередь.
+                self.connected = True
+                self.last_error = str(exc)
+                self.dropped += 1
+                with self._condition:
+                    if self._queue and self._queue[0] is message:
+                        self._queue.popleft()
+                    self._condition.notify_all()
+                continue
             except Exception as exc:
                 self.connected = False
                 self.last_error = f"{type(exc).__name__}: {exc}"
