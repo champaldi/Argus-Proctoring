@@ -31,8 +31,11 @@ LIVE_PATH = "/api/live"
 TOKEN_HEADER = "X-Argus-Token"
 URL_FILE_NAME = "teacher_url.txt"
 # Кадр события у преподавателя — это и уведомление, и доказательство в журнале.
-THUMBNAIL_WIDTH = 640
-THUMBNAIL_QUALITY = 75
+THUMBNAIL_WIDTH = 480
+THUMBNAIL_QUALITY = 70
+# После стольких неудач подряд сообщение уходит без кадра: на плохом канале
+# большой кадр не должен задерживать уведомления, кадр остаётся у студента.
+IMAGE_FAILURES_BEFORE_TEXT_ONLY = 2
 MAX_QUEUE = 500
 # Через Tailscale-ретранслятор кадр может идти несколько секунд.
 REQUEST_TIMEOUT = 10.0
@@ -247,6 +250,9 @@ class LiveReporter:
                 message["image"] = self._thumbnail(message.get("_image_path")) or ""
             if message.get("image"):
                 payload["image"] = message["image"]
+            if message.get("_failures", 0) >= IMAGE_FAILURES_BEFORE_TEXT_ONLY:
+                payload.pop("thumbnail", None)
+                payload.pop("image", None)
             try:
                 self._send(self.url, payload, self.token)
             except RejectedMessage as exc:
@@ -260,6 +266,7 @@ class LiveReporter:
                     self._condition.notify_all()
                 continue
             except Exception as exc:
+                message["_failures"] = message.get("_failures", 0) + 1
                 self.connected = False
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 with self._condition:

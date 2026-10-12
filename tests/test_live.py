@@ -184,6 +184,27 @@ class ReporterTests(unittest.TestCase):
         self.assertFalse(reporter.connected)
 
 
+class ImageFallbackTests(unittest.TestCase):
+    def test_frame_is_dropped_after_repeated_failures(self):
+        attempts = []
+
+        def sender(url, payload, token):
+            attempts.append("thumbnail" in payload)
+            if "thumbnail" in payload:
+                raise TimeoutError("timed out")
+
+        with patch.object(live_module, "RETRY_MIN", 0.01), \
+                patch.object(live_module, "RETRY_MAX", 0.02):
+            reporter = LiveReporter("127.0.0.1", sender=sender, thumbnailer=lambda _: "AAAA")
+            reporter.start()
+            reporter.event_recorded("s1", StoredEvent(
+                ProctorEvent.create("phone_aimed_at_screen", source="t"), 1, 1, "shot.jpg"))
+            self.assertTrue(_wait(lambda: reporter.pending() == 0))
+            reporter.close()
+        self.assertEqual(attempts, [True, True, False])
+        self.assertTrue(reporter.connected)
+
+
 class EndToEndTests(unittest.TestCase):
     def setUp(self):
         self.board = LiveBoard()
