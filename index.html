@@ -112,7 +112,8 @@
   table.log th { color: var(--muted); font-weight: 600; font-size: 12px; }
   table.log tr.off td { color: var(--muted); text-decoration: line-through; }
   .scroll-x { overflow-x: auto; }
-  .eye-mark { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
+  .eye-mark { display: inline-flex !important; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
+  .eye-mark svg { display: block; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   }
@@ -122,7 +123,7 @@
 <header class="sticky z-30 border-b border-line" style="top: env(safe-area-inset-top, 0px); background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);">
   <div class="wrap flex items-center justify-between gap-4 py-3">
     <a href="#top" class="flex items-center gap-2 font-display text-lg font-bold text-ink">
-      <span class="eye-mark" data-icon="eye"></span> Argus
+      <span class="eye-mark" data-icon="eye" data-size="20"></span> Argus
     </a>
     <nav class="hidden md:flex items-center gap-6 text-sm text-muted">
       <a class="hover:text-ink transition-all" href="#problem">Проблема</a>
