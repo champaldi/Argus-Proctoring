@@ -116,6 +116,10 @@ class SessionArchive:
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
+    def _event_frame_path(self, session_id: str, event: Any, event_id: str) -> Path:
+        stamp = event.occurred_at.strftime("%Y%m%dT%H%M%S_%fZ")
+        return self._session_dir(session_id) / f"{stamp}_{event.type.value}_{event_id[:8]}.jpg"
+
     def _record_event(
         self, connection: sqlite3.Connection, session_id: str, message: Mapping[str, Any]
     ) -> None:
@@ -128,17 +132,21 @@ class SessionArchive:
             return  # тип из более новой версии приложения
         event_id = _safe_id(event.event_id)
         exists = connection.execute(
-            "SELECT 1 FROM events WHERE id = ?", (event_id,)
+            "SELECT screenshot_path FROM events WHERE id = ?", (event_id,)
         ).fetchone()
+        image = _decode_image(message.get("thumbnail"))
         if exists:
+            if exists[0] is None and image is not None:
+                # Событие пришло раньше без кадра: кадр досылается следом.
+                path = self._event_frame_path(session_id, event, event_id)
+                path.write_bytes(image)
+                connection.execute(
+                    "UPDATE events SET screenshot_path = ? WHERE id = ?", (str(path), event_id)
+                )
             return
         screenshot_path = None
-        image = _decode_image(message.get("thumbnail"))
         if image is not None:
-            stamp = event.occurred_at.strftime("%Y%m%dT%H%M%S_%fZ")
-            path = self._session_dir(session_id) / (
-                f"{stamp}_{event.type.value}_{event_id[:8]}.jpg"
-            )
+            path = self._event_frame_path(session_id, event, event_id)
             path.write_bytes(image)
             screenshot_path = str(path)
         connection.execute(

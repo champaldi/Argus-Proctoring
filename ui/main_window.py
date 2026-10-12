@@ -54,7 +54,7 @@ from ui.theme import (
     window_title,
 )
 from core.detectors import DetectorCollection, ModuleStatus
-from core.live import LiveReporter
+from core.live import LiveReporter, start_background_resync
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
 from core.storage import (
@@ -424,6 +424,9 @@ class MainWindow(QMainWindow):
         self.bridge.pipeline_error.connect(self._show_runtime_error)
         # Live copy of events for the teacher panel, only when its address is set.
         self.live = LiveReporter.from_env(config.data_dir)
+        if self.live is not None:
+            # Прошлые сессии, которые не дошли до преподавателя целиком.
+            start_background_resync(config.database_path, self.live.base_url, self.live.token)
         self.pipeline = EventPipeline(
             config.database_path,
             config.screenshots_dir,

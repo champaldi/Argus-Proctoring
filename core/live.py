@@ -33,9 +33,12 @@ URL_FILE_NAME = "teacher_url.txt"
 # Кадр события у преподавателя — это и уведомление, и доказательство в журнале.
 THUMBNAIL_WIDTH = 480
 THUMBNAIL_QUALITY = 70
-# После стольких неудач подряд сообщение уходит без кадра: на плохом канале
-# большой кадр не должен задерживать уведомления, кадр остаётся у студента.
+# После стольких неудач подряд событие уходит сначала без кадра, чтобы не
+# задерживать уведомление, а кадр досылается следом тем же событием, пока не
+# дойдёт. Кадры не теряются: всё, что не подтвердил сервер, при следующем
+# запуске досылает resync_finished_sessions из локальной базы.
 IMAGE_FAILURES_BEFORE_TEXT_ONLY = 2
+SYNC_MARK = "live_synced_to"
 MAX_QUEUE = 500
 # Через Tailscale-ретранслятор кадр может идти несколько секунд.
 REQUEST_TIMEOUT = 10.0
@@ -130,7 +133,8 @@ class LiveReporter:
         sender: Callable[[str, Mapping[str, Any], str | None], None] = _post_json,
         thumbnailer: Callable[[str | None], str | None] = encode_thumbnail,
     ) -> None:
-        self.url = normalize_url(base_url) + LIVE_PATH
+        self.base_url = normalize_url(base_url)
+        self.url = self.base_url + LIVE_PATH
         self.token = token or None
         self._send = sender
         self._thumbnail = thumbnailer
@@ -141,6 +145,7 @@ class LiveReporter:
         self.connected: bool | None = None  # None — ещё не пробовали
         self.sent = 0
         self.dropped = 0
+        self.frames_deferred = 0
         self.last_error = ""
         self._student = ""
         self._started_at = ""
@@ -250,7 +255,13 @@ class LiveReporter:
                 message["image"] = self._thumbnail(message.get("_image_path")) or ""
             if message.get("image"):
                 payload["image"] = message["image"]
-            if message.get("_failures", 0) >= IMAGE_FAILURES_BEFORE_TEXT_ONLY:
+            had_image = bool(payload.get("thumbnail") or payload.get("image"))
+            text_only = (
+                had_image
+                and not message.get("_frame_followup")
+                and message.get("_failures", 0) >= IMAGE_FAILURES_BEFORE_TEXT_ONLY
+            )
+            if text_only:
                 payload.pop("thumbnail", None)
                 payload.pop("image", None)
             try:
@@ -282,4 +293,133 @@ class LiveReporter:
             with self._condition:
                 if self._queue and self._queue[0] is message:
                     self._queue.popleft()
+                if text_only:
+                    # То же событие ещё раз, теперь с кадром: сервер узнает его
+                    # по ID и прикрепит кадр, повторного уведомления не будет.
+                    followup = {key: value for key, value in message.items()}
+                    followup["_failures"] = 0
+                    followup["_frame_followup"] = True
+                    self._queue.append(followup)
+                    self.frames_deferred += 1
                 self._condition.notify_all()
+
+
+def _session_messages(
+    connection: Any, row: Any, thumbnailer: Callable[[str | None], str | None]
+) -> list[dict[str, Any]]:
+    session_id, started_at, ended_at, metadata_json, final_risk = row
+    try:
+        metadata = json.loads(metadata_json or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    base = {
+        "session_id": session_id,
+        "student": str(metadata.get("student_name") or "").strip(),
+        "started_at": started_at,
+        "sent_at": ended_at,
+        "replay": True,
+    }
+    messages: list[dict[str, Any]] = [{**base, "kind": "start"}]
+    reference = metadata.get("reference_photo")
+    if isinstance(reference, str) and reference:
+        image = thumbnailer(reference)
+        if image:
+            messages.append({**base, "kind": "reference", "image": image})
+    rows = connection.execute(
+        """SELECT id, event_type, occurred_at, source, confidence, weight, risk_total,
+                  details_json, screenshot_path
+           FROM events WHERE session_id = ? ORDER BY occurred_at, rowid""",
+        (session_id,),
+    ).fetchall()
+    for (event_id, event_type, occurred_at, source, confidence, weight, risk_total,
+         details_json, screenshot_path) in rows:
+        try:
+            details = json.loads(details_json or "{}")
+        except json.JSONDecodeError:
+            details = {}
+        message = {
+            **base, "kind": "event", "weight": weight, "risk_total": risk_total,
+            "event": {
+                "event_id": event_id, "type": event_type, "source": source,
+                "occurred_at": occurred_at, "confidence": confidence, "details": details,
+            },
+        }
+        thumbnail = thumbnailer(screenshot_path) if screenshot_path else None
+        if thumbnail:
+            message["thumbnail"] = thumbnail
+        messages.append(message)
+    messages.append({**base, "kind": "finish", "final_risk": final_risk})
+    return messages
+
+
+def resync_finished_sessions(
+    database_path: Path,
+    base_url: str,
+    *,
+    token: str | None = None,
+    sender: Callable[[str, Mapping[str, Any], str | None], None] = _post_json,
+    thumbnailer: Callable[[str | None], str | None] = encode_thumbnail,
+) -> tuple[int, str]:
+    """Досылает в журнал преподавателя завершённые сессии из локальной базы.
+
+    Каждая сессия уходит целиком, с кадрами и контрольным фото. Сервер узнаёт
+    уже полученное по ID, поэтому повтор безопасен. Сессия отмечается как
+    доставленная по этому адресу только когда все её сообщения приняты; при
+    первой ошибке остановка, повтор при следующем запуске.
+    Возвращает (сколько сессий досланы, текст последней ошибки).
+    """
+    import sqlite3  # noqa: PLC0415
+
+    url = normalize_url(base_url)
+    if not url or not database_path.is_file():
+        return 0, ""
+    connection = sqlite3.connect(database_path, timeout=10)
+    synced = 0
+    try:
+        rows = connection.execute(
+            """SELECT id, started_at, ended_at, metadata_json, final_risk FROM sessions
+               WHERE ended_at IS NOT NULL ORDER BY started_at"""
+        ).fetchall()
+        for row in rows:
+            try:
+                metadata = json.loads(row[3] or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if metadata.get(SYNC_MARK) == url:
+                continue
+            for message in _session_messages(connection, row, thumbnailer):
+                try:
+                    sender(url + LIVE_PATH, message, token)
+                except RejectedMessage:
+                    continue  # испорченная запись не должна блокировать остальное
+                except Exception as exc:  # noqa: BLE001 — сеть: повторим позже
+                    return synced, f"{type(exc).__name__}: {exc}"
+            metadata[SYNC_MARK] = url
+            connection.execute(
+                "UPDATE sessions SET metadata_json = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False, default=str), row[0]),
+            )
+            connection.commit()
+            synced += 1
+    finally:
+        connection.close()
+    return synced, ""
+
+
+def start_background_resync(
+    database_path: Path, base_url: str, token: str | None = None
+) -> threading.Thread:
+    """Запускает досылку в фоне, чтобы не задерживать старт теста."""
+    thread = threading.Thread(
+        target=resync_finished_sessions,
+        args=(database_path, base_url),
+        kwargs={"token": token},
+        name="live-resync",
+        daemon=True,
+    )
+    thread.start()
+    return thread

@@ -441,6 +441,16 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("object expected")
             if message.get("kind") not in {"start", "event", "finish", "ping", "reference"}:
                 raise ValueError("unknown live message")
+            if message.get("replay"):
+                # Досылка из локальной базы студента: только в журнал, без
+                # уведомлений и без блока активных сессий.
+                if self.server.archive is None:
+                    self._json(501, {"ok": False, "error": "journal is off"})
+                    return
+                self.server.archive.record(message)
+                self.server.archived.set()
+                self._json(200, {"ok": True})
+                return
             if self.server.archive is not None:
                 # Сначала журнал: если диск или база недоступны, студент повторит.
                 self.server.archive.record(message)

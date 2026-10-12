@@ -116,6 +116,103 @@ class ArchiveTests(unittest.TestCase):
         self.assertIsNone(load_sessions(self.database)[0].reference_photo)
 
 
+class LateFrameTests(unittest.TestCase):
+    def test_frame_sent_after_the_event_is_attached(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "proctoring.db"
+            archive = SessionArchive(database)
+            event = _messages()[2]
+            text_only = {key: value for key, value in event.items() if key != "thumbnail"}
+            archive.record(_messages()[0])
+            archive.record(text_only)
+            self.assertIsNone(load_sessions(database)[0].events[0].screenshot_path)
+            archive.record(event)
+            stored = load_sessions(database)[0].events[0]
+            self.assertEqual(Path(stored.screenshot_path).read_bytes(), FAKE_JPEG)
+
+
+class ResyncTests(unittest.TestCase):
+    def _student_session(self, root: Path) -> Path:
+        database = root / "student" / "events.db"
+        store = EventStore(database, root / "student" / "shots")
+        store.start_session("s9", {"student_name": "Нурлыбек"})
+        shot = root / "frame.jpg"
+        shot.write_bytes(FAKE_JPEG)
+        store.connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE id = 's9'",
+            (json.dumps({"student_name": "Нурлыбек", "reference_photo": str(shot)}),),
+        )
+        store.connection.commit()
+        for kind in ("phone_aimed_at_screen", "gaze_down"):
+            stored = store.record_event(
+                ProctorEvent.create(kind, source="test"), session_id="s9",
+                weight=10, risk_total=10,
+            )
+            store.connection.execute(
+                "UPDATE events SET screenshot_path = ? WHERE id = ?",
+                (str(shot), stored.event.event_id),
+            )
+        store.connection.commit()
+        store.finish_session("s9", final_risk=20)
+        store.close()
+        return database
+
+    def test_finished_session_is_resent_whole_and_marked(self):
+        from core.live import resync_finished_sessions
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            student_db = self._student_session(root)
+            teacher_db = root / "teacher" / "proctoring.db"
+            board = LiveBoard()
+            server = LiveServer(board, host="127.0.0.1", port=0,
+                                archive=SessionArchive(teacher_db))
+            server.start()
+            try:
+                base = f"http://127.0.0.1:{server.port}"
+                encode = lambda path: FAKE_JPEG_B64 if path else None  # noqa: E731
+                synced, error = resync_finished_sessions(student_db, base, thumbnailer=encode)
+                self.assertEqual((synced, error), (1, ""))
+                session = load_sessions(teacher_db)[0]
+                self.assertEqual(session.student_name, "Нурлыбек")
+                self.assertEqual(len(session.events), 2)
+                self.assertTrue(all(
+                    Path(stored.screenshot_path).is_file() for stored in session.events
+                ))
+                self.assertTrue(Path(session.reference_photo).is_file())
+                self.assertIsNotNone(session.ended_at)
+                self.assertEqual(board.sessions(), [])  # досылка не трогает активные
+                self.assertEqual(server.drain(), [])
+                # Второй запуск: уже отмечено, ничего не шлётся.
+                self.assertEqual(resync_finished_sessions(student_db, base), (0, ""))
+            finally:
+                server.stop()
+
+    def test_network_failure_leaves_session_for_next_start(self):
+        from core.live import resync_finished_sessions
+
+        with tempfile.TemporaryDirectory() as temporary:
+            student_db = self._student_session(Path(temporary))
+
+            def offline(*_):
+                raise OSError("offline")
+
+            synced, error = resync_finished_sessions(
+                student_db, "127.0.0.1", sender=offline, thumbnailer=lambda _: None
+            )
+            self.assertEqual(synced, 0)
+            self.assertIn("offline", error)
+            sent = []
+            synced, _ = resync_finished_sessions(
+                student_db, "127.0.0.1",
+                sender=lambda url, payload, token: sent.append(payload["kind"]),
+                thumbnailer=lambda _: None,
+            )
+            self.assertEqual(synced, 1)
+            self.assertEqual(sent[0], "start")
+            self.assertEqual(sent[-1], "finish")
+
+
 class RuleSummaryTests(unittest.TestCase):
     def test_violation_stays_main_rule_and_others_are_counted(self):
         board = LiveBoard()

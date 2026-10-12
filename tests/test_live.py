@@ -185,12 +185,14 @@ class ReporterTests(unittest.TestCase):
 
 
 class ImageFallbackTests(unittest.TestCase):
-    def test_frame_is_dropped_after_repeated_failures(self):
+    def test_slow_frame_goes_text_first_then_frame_follows(self):
         attempts = []
+        failures = {"left": 2}
 
         def sender(url, payload, token):
             attempts.append("thumbnail" in payload)
-            if "thumbnail" in payload:
+            if "thumbnail" in payload and failures["left"]:
+                failures["left"] -= 1
                 raise TimeoutError("timed out")
 
         with patch.object(live_module, "RETRY_MIN", 0.01), \
@@ -201,8 +203,30 @@ class ImageFallbackTests(unittest.TestCase):
                 ProctorEvent.create("phone_aimed_at_screen", source="t"), 1, 1, "shot.jpg"))
             self.assertTrue(_wait(lambda: reporter.pending() == 0))
             reporter.close()
-        self.assertEqual(attempts, [True, True, False])
+        # two slow tries, text only, then the same event with its frame
+        self.assertEqual(attempts, [True, True, False, True])
+        self.assertEqual(reporter.frames_deferred, 1)
         self.assertTrue(reporter.connected)
+
+    def test_frame_follow_up_is_never_stripped(self):
+        attempts = []
+
+        def sender(url, payload, token):
+            attempts.append("thumbnail" in payload)
+            if "thumbnail" in payload and len(attempts) < 6:
+                raise TimeoutError("timed out")
+
+        with patch.object(live_module, "RETRY_MIN", 0.01), \
+                patch.object(live_module, "RETRY_MAX", 0.02):
+            reporter = LiveReporter("127.0.0.1", sender=sender, thumbnailer=lambda _: "AAAA")
+            reporter.start()
+            reporter.event_recorded("s1", StoredEvent(
+                ProctorEvent.create("gaze_down", source="t"), 1, 1, "shot.jpg"))
+            self.assertTrue(_wait(lambda: reporter.pending() == 0))
+            reporter.close()
+        self.assertEqual(attempts[:3], [True, True, False])
+        self.assertTrue(all(attempts[3:]))
+        self.assertTrue(attempts[-1])
 
 
 class EndToEndTests(unittest.TestCase):
