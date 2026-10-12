@@ -446,6 +446,10 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._render_question()
+        # На время экзамена окно на весь экран, без рамки и кнопок размера.
+        from ui.window_lock import WindowLock, fullscreen_enabled
+
+        self.window_lock = WindowLock(self) if fullscreen_enabled() else None
         self.risk_timer = QTimer(self)
         self.risk_timer.timeout.connect(self._refresh_risk)
         self.risk_timer.start(1000)
@@ -725,6 +729,9 @@ class MainWindow(QMainWindow):
         self.close()
 
     def start_monitoring(self) -> None:
+        if self.window_lock is not None:
+            # До защиты: она проверяет, что окно уже закрывает весь экран.
+            self.window_lock.engage()
         enabled, message = self.security.enable(hwnd=int(self.winId()))
         self._set_status(
             self.security_status_label,
@@ -900,6 +907,8 @@ class MainWindow(QMainWindow):
         if self._shutdown_done:
             return
         self._shutdown_done = True
+        if getattr(self, "window_lock", None) is not None:
+            self.window_lock.release()
         if hasattr(self, "risk_timer"):
             self.risk_timer.stop()
         try:
