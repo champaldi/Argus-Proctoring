@@ -146,6 +146,11 @@ class AnalyzerConfig:
     keyboard_iris_tolerance: float = 0.15
     min_eye_open_ratio: float = 0.12
     max_num_faces: int = 3
+    # Face Mesh loses a face turned to profile. A face that disappears right
+    # after a sideways head turn is the student looking away, not leaving:
+    # keep counting it as gaze_side for up to turned_away_max_seconds.
+    turned_away_handoff_seconds: float = 1.0
+    turned_away_max_seconds: float = 10.0
     smoothing_window: int = 3
     calibration_min_samples: int = 10
 
@@ -415,6 +420,8 @@ class GazeAnalyzer:
         self._last_timestamp = None
         self._iris_missing_since: float | None = None
         self._last_deferred_gaze: set[EventType] = set()
+        self._last_side_seen_at: float | None = None
+        self._turned_away_since: float | None = None
         self.last_result = AnalysisResult(0, None, (), [], {})
 
     def get_face_width_ratio(self) -> float | None:
@@ -541,6 +548,22 @@ class GazeAnalyzer:
             self._keyboard = reference
         self.reset()
 
+    def _turned_away(self, now: float) -> bool:
+        """Face lost right after a sideways turn: still looking away, for a while."""
+        cfg = self.config
+        if self._turned_away_since is None:
+            if (
+                self._last_side_seen_at is None
+                or now - self._last_side_seen_at > cfg.turned_away_handoff_seconds
+            ):
+                return False
+            self._turned_away_since = now
+        if now - self._turned_away_since <= cfg.turned_away_max_seconds:
+            return True
+        # Too long without a face: from here on it counts as an absent face.
+        self._turned_away_since = self._last_side_seen_at = None
+        return False
+
     def _signals(self, metrics: FaceMetrics) -> tuple[EventType, ...]:
         cfg = self.config
         baseline = self._screen or FaceMetrics(HeadPose(0, 0, 0), 0.5, 0.5)
@@ -665,8 +688,14 @@ class GazeAnalyzer:
         if count != 1:
             self._history.clear()
             self._iris_missing_since = None
-            signals: tuple[EventType, ...] = ("no_face",) if count == 0 else ("multiple_faces",)
+            if count == 0 and self._turned_away(now):
+                signals: tuple[EventType, ...] = ("gaze_side",)
+            else:
+                if count > 1:
+                    self._last_side_seen_at = self._turned_away_since = None
+                signals = ("no_face",) if count == 0 else ("multiple_faces",)
         else:
+            self._turned_away_since = None
             height, width = frame.shape[:2]
             face_width_ratio = measure_face_width_ratio(faces[0].landmark)
             measured = measure_face(
@@ -680,6 +709,8 @@ class GazeAnalyzer:
                 self._history.append(measured)
                 metrics = _median_metrics(list(self._history))
                 fresh_signals = self._signals(measured)
+                if "gaze_side" in fresh_signals:
+                    self._last_side_seen_at = now
                 signals = tuple(name for name in self._signals(metrics) if name in fresh_signals)
                 if (
                     self._iris_missing_since is not None
@@ -731,6 +762,8 @@ class GazeAnalyzer:
                 }
                 if face_width_ratio is not None:
                     event["face_width_ratio"] = face_width_ratio
+                if name == "gaze_side" and count == 0:
+                    event["turned_away"] = True
                 if metrics is not None:
                     if metrics.head_pose is not None:
                         event["head_pose"] = asdict(metrics.head_pose)
