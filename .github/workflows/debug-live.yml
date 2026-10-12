@@ -1,0 +1,23 @@
+name: debug-live
+on:
+  push:
+    branches: [feat/live-alerts]
+jobs:
+  debug:
+    runs-on: windows-2022
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy==1.26.4 opencv-python==4.11.0.86
+      - name: run
+        run: |
+          python -m unittest discover -s tests -p "test_live*.py" -v 2>&1 | Tee-Object -FilePath out.txt
+          Get-Content out.txt | Select-String -Pattern "FAIL|ERROR|Error|assert|Traceback|line \d+" | ForEach-Object { Write-Output "::error::$($_.Line)" }
