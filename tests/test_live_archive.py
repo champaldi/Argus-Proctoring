@@ -102,7 +102,12 @@ class ArchiveTests(unittest.TestCase):
         session = load_sessions(self.database)[0]
         self.assertEqual(session.final_risk, 45)  # завершена локально, не перезаписана
         self.assertEqual(len(session.events), 2)
-        self.assertIsNone(session.events[0].screenshot_path)
+        by_id = {stored.event.event_id: stored for stored in session.events}
+        phone = by_id[messages[2]["event"]["event_id"]]
+        # The local copy had no frame; the one from the message is attached.
+        self.assertEqual(Path(phone.screenshot_path).read_bytes(), FAKE_JPEG)
+        gaze = by_id[messages[3]["event"]["event_id"]]
+        self.assertIsNone(gaze.screenshot_path)  # испорченный кадр не записан
 
     def test_bad_ids_are_rejected(self):
         with self.assertRaises(ValueError):
