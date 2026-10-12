@@ -42,8 +42,8 @@ if not "%NEW%"=="" set "TEACHER=%NEW%"
 if not "%TEACHER%"=="" (>"data\teacher_url.txt" echo %TEACHER%)
 
 :run
-rem Переменная окружения важнее файла: сбрасываем, чтобы работал именно файл.
-set "PROCTOR_TEACHER_URL="
+rem Адрес передаётся явно, поэтому он работает и с другой папкой данных (PROCTOR_DATA_DIR).
+set "PROCTOR_TEACHER_URL=%TEACHER%"
 "%PY%" main.py
 echo.
 pause
