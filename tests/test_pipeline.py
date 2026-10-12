@@ -158,3 +158,45 @@ class ReferencePhotoTests(unittest.TestCase):
                 pipeline.offer_reference_frame(np.full((8, 8, 3), 120, np.uint8))
             )
             pipeline.stop()
+
+
+class PreTestGateTests(unittest.TestCase):
+    def test_check_page_events_do_not_count_until_the_test_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(
+                root / "events.db", root / "screenshots", require_test_start=True,
+                cooldowns={},
+            )
+            pipeline.start()
+            try:
+                self.assertFalse(pipeline.submit(ProctorEvent.create("gaze_down", source="t")))
+                self.assertFalse(
+                    pipeline.submit(ProctorEvent.create("hotkey_blocked", source="t"))
+                )
+                # A forbidden program running already is still recorded.
+                self.assertTrue(
+                    pipeline.submit(ProctorEvent.create("suspicious_process", source="t"))
+                )
+                pipeline.begin_test()
+                self.assertTrue(pipeline.submit(ProctorEvent.create("gaze_down", source="t")))
+            finally:
+                pipeline.stop()
+            connection = sqlite3.connect(root / "events.db")
+            try:
+                kinds = [row[0] for row in connection.execute(
+                    "SELECT event_type FROM events ORDER BY rowid"
+                )]
+            finally:
+                connection.close()
+            self.assertEqual(kinds, ["suspicious_process", "gaze_down"])
+
+    def test_without_the_gate_everything_counts_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = EventPipeline(root / "events.db", root / "screenshots", cooldowns={})
+            pipeline.start()
+            try:
+                self.assertTrue(pipeline.submit(ProctorEvent.create("gaze_down", source="t")))
+            finally:
+                pipeline.stop()

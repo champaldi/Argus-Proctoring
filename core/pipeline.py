@@ -34,6 +34,18 @@ DEFAULT_COOLDOWNS: dict[EventType, float] = {
 }
 
 
+# Before the student presses «Начать тест» only lasting environment problems
+# are recorded: a glance or a blocked key during the camera check is not a
+# violation, but a remote session or a forbidden program already running is.
+PRE_TEST_EVENT_TYPES: frozenset[EventType] = frozenset({
+    EventType.SUSPICIOUS_PROCESS,
+    EventType.REMOTE_SESSION,
+    EventType.MULTIPLE_MONITORS,
+    EventType.CAPTURE_PROTECTION_FAILED,
+    EventType.PROTECTION_DISABLED,
+})
+
+
 @dataclass(slots=True)
 class _QueuedEvent:
     event: ProctorEvent
@@ -74,6 +86,7 @@ class EventPipeline:
         queue_size: int = 256,
         metadata: dict[str, Any] | None = None,
         live: LiveReporter | None = None,
+        require_test_start: bool = False,
     ) -> None:
         self.session_id = uuid4().hex
         self.metadata: dict[str, Any] = {"application": "proctoring", **(metadata or {})}
@@ -82,6 +95,7 @@ class EventPipeline:
         self.on_recorded = on_recorded
         self.on_error = on_error
         self.live = live
+        self._test_started = not require_test_start
         self.cooldowns = dict(DEFAULT_COOLDOWNS if cooldowns is None else cooldowns)
         self._queue: queue.Queue[_QueuedEvent | _ReferenceFrame | None] = queue.Queue(
             queue_size
@@ -137,8 +151,18 @@ class EventPipeline:
         self._reference_requested = True
         return True
 
+    def begin_test(self) -> None:
+        """From now on every event counts (see PRE_TEST_EVENT_TYPES)."""
+        self._test_started = True
+
+    @property
+    def test_started(self) -> bool:
+        return self._test_started
+
     def submit(self, event: ProctorEvent, frame: Any = None) -> bool:
         if self._thread is None or self._stopping:
+            return False
+        if not self._test_started and event.type not in PRE_TEST_EVENT_TYPES:
             return False
         now = time.monotonic()
         with self._dedupe_lock:

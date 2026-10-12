@@ -434,6 +434,8 @@ class MainWindow(QMainWindow):
             on_error=self.bridge.pipeline_error.emit,
             metadata=session_metadata(student_name),
             live=self.live,
+            # Glances and keys during the pre-test check do not count.
+            require_test_start=True,
         )
         self.pipeline.start()
 
@@ -558,6 +560,7 @@ class MainWindow(QMainWindow):
     def _begin_test(self) -> None:
         if not self._camera_ready:
             return
+        self.pipeline.begin_test()
         self.test_stack.setCurrentIndex(1)
 
     def _build_question_card(self) -> QWidget:
