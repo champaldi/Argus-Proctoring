@@ -34,7 +34,8 @@ URL_FILE_NAME = "teacher_url.txt"
 THUMBNAIL_WIDTH = 640
 THUMBNAIL_QUALITY = 75
 MAX_QUEUE = 500
-REQUEST_TIMEOUT = 3.0
+# Через Tailscale-ретранслятор кадр может идти несколько секунд.
+REQUEST_TIMEOUT = 10.0
 RETRY_MIN = 1.0
 RETRY_MAX = 10.0
 # Пока тест идёт, панель раз в столько секунд узнаёт, что студент на связи.
