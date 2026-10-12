@@ -54,7 +54,7 @@ from .data import (
     weight_label,
 )
 from .live import INFO, Alert, LiveServer, local_addresses
-from .rules import LEVEL_TITLES, SUSPICIOUS, VIOLATION, Finding, evaluate_rules
+from .rules import LEVEL_TITLES, SUSPICIOUS, VIOLATION, Finding, classify, evaluate_rules
 from ui.theme import (
     CRITICAL,
     CRITICAL_TEXT,
@@ -206,6 +206,15 @@ MAX_TOASTS = 3
 TOAST_COLORS = {VIOLATION: CRITICAL_TEXT, SUSPICIOUS: WARNING_TEXT, INFO: MUTED}
 
 
+def _outcome_text(outcome: str, findings: tuple[Finding, ...]) -> str:
+    """«Нарушение · V1, V2», «Подозрительно · S5» или «Чисто»."""
+    if outcome == "clean":
+        return "Чисто"
+    ids = ", ".join(finding.rule_id for finding in findings if finding.level == outcome)
+    title = "Нарушение" if outcome == VIOLATION else "Подозрительно"
+    return f"{title} · {ids}"
+
+
 def _pixmap_from_base64(value: str | None) -> QPixmap | None:
     if not value:
         return None
@@ -270,10 +279,18 @@ class TeacherWindow(QMainWindow):
     """Список сессий и подробный просмотр в одном окне."""
 
     def __init__(
-        self, database_path: Path, reviews_path: Path, live_server: LiveServer | None = None
+        self,
+        database_path: Path,
+        reviews_path: Path,
+        live_server: LiveServer | None = None,
+        *,
+        show_alerts: bool = False,
     ) -> None:
         super().__init__()
         self.live_server = live_server
+        # Всплывающие уведомления — по желанию (--alerts); журнал и активные
+        # сессии работают и без них.
+        self.show_alerts = show_alerts
         self._toasts: list[AlertToast] = []
         # Qt offscreen на Windows иногда не видит системные шрифты сам.
         if not QFontDatabase.families():
@@ -350,18 +367,22 @@ class TeacherWindow(QMainWindow):
         self.review_filter = QCheckBox("Только требующие проверки")
         self.review_filter.toggled.connect(self._populate_table)
         filters.addWidget(self.review_filter)
+        self.violation_filter = QCheckBox("Только с признаками нарушения")
+        self.violation_filter.toggled.connect(self._populate_table)
+        filters.addWidget(self.violation_filter)
         filters.addStretch()
         root.addLayout(filters)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels((
-            "Студент", "Дата", "Длительность", "Риск", "Нарушения по типам", "Статус",
+            "Студент", "Дата", "Длительность", "Риск", "Итог по правилам",
+            "Нарушения по типам", "Статус",
         ))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.cellDoubleClicked.connect(self._open_row)
         root.addWidget(self.table, 1)
         hint = QLabel("Двойной щелчок по строке открывает сессию.")
@@ -371,7 +392,7 @@ class TeacherWindow(QMainWindow):
 
     def _build_live_card(self) -> QFrame:
         card, layout = _card()
-        title = QLabel("Идёт экзамен")
+        title = QLabel("Активные сессии")
         title.setObjectName("section")
         layout.addWidget(title)
         port = self.live_server.port
@@ -427,12 +448,13 @@ class TeacherWindow(QMainWindow):
         self._live_ticks += 1
         changed = self.live_server.changed.is_set()
         self.live_server.changed.clear()
-        for alert in alerts:
-            if alert.title == "Начал тест":
-                continue
-            self._show_toast(alert)
-        if any(alert.level == VIOLATION for alert in alerts):
-            QApplication.beep()
+        if self.show_alerts:
+            for alert in alerts:
+                if alert.title == "Начал тест":
+                    continue
+                self._show_toast(alert)
+            if any(alert.level == VIOLATION for alert in alerts):
+                QApplication.beep()
         if changed or alerts or self._live_ticks % 10 == 0:
             self._refresh_live_table()
         # Журнал на диске пополнился: перечитываем таблицу сессий не чаще раза
@@ -498,6 +520,10 @@ class TeacherWindow(QMainWindow):
             if self.review_filter.isChecked() and verdict not in {"unreviewed", "questionable"}:
                 continue
             excluded = excluded_event_ids(session, review)
+            findings = evaluate_rules(session, excluded)
+            outcome = classify(findings)
+            if self.violation_filter.isChecked() and outcome != VIOLATION:
+                continue
             score = recalculate_risk(session, excluded)
             summary = summarize_events(session, excluded)
             count_text = ", ".join(
@@ -511,6 +537,7 @@ class TeacherWindow(QMainWindow):
                 session.started_at.astimezone().strftime("%d.%m.%Y %H:%M"),
                 _duration_text(session.duration_seconds),
                 f"{score:.1f} · {ZONE_LABELS[risk_zone(score)]}",
+                _outcome_text(outcome, findings),
                 count_text,
                 VERDICT_LABELS[verdict].capitalize(),
             )
@@ -521,6 +548,8 @@ class TeacherWindow(QMainWindow):
                 if column == 3:
                     cell.setData(Qt.ItemDataRole.UserRole, score)
                     cell.setForeground(QColor(_risk_color(score)))
+                if column == 4 and outcome in TOAST_COLORS:
+                    cell.setForeground(QColor(TOAST_COLORS[outcome]))
                 self.table.setItem(row, column, cell)
             self.table.setRowHeight(row, 44)
         self.table.setSortingEnabled(True)

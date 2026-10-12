@@ -32,6 +32,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="отдельная база решений преподавателя")
     parser.add_argument("--live", action="store_true",
                         help="принимать события студентов по локальной сети")
+    parser.add_argument("--alerts", action="store_true",
+                        help="всплывающие уведомления о сработавших правилах (с --live)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"порт для --live, по умолчанию {DEFAULT_PORT}")
     args = parser.parse_args(argv)
@@ -57,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Панель откроется без живых уведомлений.",
             )
             server = None
-    window = TeacherWindow(database, reviews, live_server=server)
+    window = TeacherWindow(database, reviews, live_server=server, show_alerts=args.alerts)
     window.show()
     try:
         return app.exec()

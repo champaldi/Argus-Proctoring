@@ -101,6 +101,47 @@ class TeacherUiTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_rule_outcome_column_and_violation_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "proctoring.db"
+            seed_demo(database, root / "screenshots")
+            window = TeacherWindow(database, root / "reviews.db")
+            try:
+                outcomes = [window.table.item(row, 4).text() for row in range(window.table.rowCount())]
+                violations = [text for text in outcomes if text.startswith("Нарушение")]
+                self.assertTrue(violations)
+                window.violation_filter.setChecked(True)
+                self.assertEqual(window.table.rowCount(), len(violations))
+                for row in range(window.table.rowCount()):
+                    self.assertTrue(window.table.item(row, 4).text().startswith("Нарушение"))
+            finally:
+                window.close()
+
+    def test_live_panel_without_alerts_keeps_active_sessions_quiet(self) -> None:
+        from shiboken6 import delete
+        from teacher.live import LiveBoard, LiveServer
+
+        server = LiveServer(LiveBoard(), host="127.0.0.1", port=0)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            window = TeacherWindow(root / "proctoring.db", root / "reviews.db", live_server=server)
+            try:
+                event = ProctorEvent.create("phone_aimed_at_screen", source="test")
+                for alert in server.board.apply({
+                    "kind": "event", "session_id": "s1", "student": "Карим",
+                    "event": event.to_dict(), "weight": 45, "risk_total": 45,
+                }):
+                    server.alerts.put(alert)
+                server.changed.set()
+                window._poll_live()
+                self.assertEqual(window.live_table.rowCount(), 1)
+                self.assertEqual(window._toasts, [])
+            finally:
+                window.close()
+                server.server_close()
+                delete(window)
+
     def test_live_alert_appears_in_table_and_toast(self) -> None:
         from teacher.archive import SessionArchive
         from teacher.live import LiveBoard, LiveServer
@@ -110,7 +151,8 @@ class TeacherUiTests(unittest.TestCase):
             archive = SessionArchive(root / "proctoring.db")
             server = LiveServer(LiveBoard(), host="127.0.0.1", port=0, archive=archive)
             window = TeacherWindow(
-                root / "proctoring.db", root / "reviews.db", live_server=server
+                root / "proctoring.db", root / "reviews.db", live_server=server,
+                show_alerts=True,
             )
             try:
                 window.show()
