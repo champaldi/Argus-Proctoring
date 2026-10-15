@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -34,18 +35,30 @@ from core.student import session_metadata, student_name_from_env
 from ui.fonts import apply_brand_accent, load_app_fonts
 from ui.theme import (
     ACCENT,
+    ACCENT_SOFT,
     APP_NAME,
+    BORDER,
+    CARD,
+    CRITICAL,
+    CRITICAL_TEXT,
+    HEADING,
     MAIN_WINDOW_STYLE,
+    MUTED,
+    PAGE,
+    SAFE,
+    SAFE_TEXT,
+    TEXT,
+    WARNING_TEXT,
     STATUS_OK_COLOR,
     STATUS_WARNING_COLOR,
     window_title,
 )
 from core.detectors import DetectorCollection, ModuleStatus
+from core.live import LiveReporter, start_background_resync
 from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
 from core.storage import (
     StoredEvent,
-    load_session_events,
     record_teacher_verdict,
 )
 from events import ProctorEvent
@@ -66,6 +79,7 @@ EVENT_LABELS = {
     "remote_session": "Тест запущен через удалённую сессию",
     "multiple_monitors": "Подключено несколько мониторов",
     "injected_input": "Ввод не с физических устройств",
+    "protection_disabled": "Защита отключена вручную (Ctrl+Alt+F12)",
 }
 
 
@@ -200,6 +214,9 @@ class CameraWorker(QObject):
                     gaze_time_total += self.detectors.last_timings_ms.get("gaze", 0.0)
                     for event in events:
                         self.pipeline.submit(event, frame)
+                    if not events:
+                        # A no-op after the first stored control photo.
+                        self.pipeline.offer_reference_frame(frame)
                     for message in errors:
                         if now - last_error.get(message, 0.0) >= 5.0:
                             self.analysis_error.emit(message)
@@ -241,6 +258,58 @@ class CameraWorker(QObject):
             self.finished.emit()
 
 
+class StudentFinishDialog(QDialog):
+    """Экран студента после теста: только подтверждение, без риска и вердикта.
+
+    Разбор сессии и решение «списывал / не списывал» — у преподавателя в панели.
+    """
+
+    def __init__(
+        self,
+        *,
+        student_name: str | None,
+        answered: int,
+        total: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(window_title("Тест завершён"))
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self.setStyleSheet(
+            f"""
+            QDialog, QWidget {{ background: {PAGE}; color: {TEXT}; }}
+            QLabel#finishHeading {{ font-size: 26px; font-weight: 700; color: {HEADING}; }}
+            QPushButton {{ border: 0; border-radius: 9px; padding: 12px 22px;
+                          color: white; font-weight: 700; background: {ACCENT}; }}
+            """
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 32, 32, 28)
+        root.setSpacing(12)
+
+        heading = QLabel("Тест завершён")
+        heading.setObjectName("finishHeading")
+        root.addWidget(heading)
+        name = (student_name or "").strip()
+        if name:
+            root.addWidget(QLabel(name))
+        root.addWidget(QLabel(f"Отвечено вопросов: {answered} из {total}"))
+        note = QLabel("Ответы сохранены. Результат сообщит преподаватель.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED};")
+        root.addWidget(note)
+        root.addSpacing(8)
+
+        close = QPushButton("Закрыть")
+        close.setObjectName("finishClose")
+        close.clicked.connect(self.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        root.addLayout(row)
+
+
 class TeacherReviewDialog(QDialog):
     """End-of-session evidence review for the teacher."""
 
@@ -261,16 +330,19 @@ class TeacherReviewDialog(QDialog):
         self.resize(900, 720)
         self.setModal(True)
         self.setStyleSheet(
-            """
-            QDialog, QWidget { background: #0b1020; color: #e8edf7; }
-            QFrame#reviewCard { background: #121a2d; border: 1px solid #26334f;
-                                border-radius: 12px; }
-            QLabel#reviewHeading { font-size: 24px; font-weight: 700; }
-            QPushButton { border: 0; border-radius: 9px; padding: 12px 18px;
-                          color: white; font-weight: 700; }
-            QPushButton#cheated { background: #c94f5d; }
-            QPushButton#notCheated { background: #279b78; }
-            QScrollArea { border: 0; }
+            f"""
+            QDialog, QWidget {{ background: {PAGE}; color: {TEXT}; }}
+            QFrame#reviewCard {{ background: {CARD}; border: 1px solid {BORDER};
+                                border-radius: 12px; }}
+            QFrame#reviewCard QLabel {{ background: transparent; }}
+            QLabel#reviewHeading {{ font-size: 24px; font-weight: 700; color: {HEADING}; }}
+            QPushButton {{ border: 0; border-radius: 9px; padding: 12px 18px;
+                          color: white; font-weight: 700; }}
+            QPushButton#cheated {{ background: {CRITICAL}; }}
+            QPushButton#cheated:hover {{ background: {CRITICAL_TEXT}; }}
+            QPushButton#notCheated {{ background: {SAFE}; }}
+            QPushButton#notCheated:hover {{ background: {SAFE_TEXT}; }}
+            QScrollArea {{ border: 0; }}
             """
         )
 
@@ -322,11 +394,12 @@ class TeacherReviewDialog(QDialog):
 
     @staticmethod
     def _risk_color(value: float) -> str:
+        # Darker shades keep the number readable on the light background.
         if value > RISK_RED_ABOVE:
-            return "#ef6262"
+            return CRITICAL_TEXT
         if value >= RISK_YELLOW_FROM:
-            return "#f0c45d"
-        return "#55d6a9"
+            return WARNING_TEXT
+        return SAFE_TEXT
 
     def _event_card(self, stored: StoredEvent) -> QFrame:
         card = QFrame()
@@ -336,7 +409,9 @@ class TeacherReviewDialog(QDialog):
         preview = QLabel("Без снимка")
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview.setFixedSize(180, 105)
-        preview.setStyleSheet("background:#070b15; border-radius:8px; color:#70809e;")
+        preview.setStyleSheet(
+            f"background:{ACCENT_SOFT}; border-radius:8px; color:{MUTED};"
+        )
         if stored.screenshot_path:
             pixmap = QPixmap(stored.screenshot_path)
             if not pixmap.isNull():
@@ -353,7 +428,7 @@ class TeacherReviewDialog(QDialog):
         text = QVBoxLayout()
         event_name = stored.event.type.value
         title = QLabel(EVENT_LABELS.get(event_name, event_name))
-        title.setStyleSheet("font-size:16px; font-weight:700;")
+        title.setStyleSheet(f"font-size:16px; font-weight:700; color:{HEADING};")
         text.addWidget(title)
         local_time = stored.event.occurred_at.astimezone().strftime("%H:%M:%S")
         text.addWidget(QLabel(f"Время: {local_time} · Источник: {stored.event.source}"))
@@ -390,16 +465,28 @@ class MainWindow(QMainWindow):
         self.answers: dict[int, int] = {}
         self.question_index = 0
         self._shutdown_done = False
+        # The questions open only after the pre-test check: models loaded and
+        # the camera delivering frames.
+        self._camera_ready = False
+        self._module_results: dict[str, bool] = {}
 
         self.bridge = UiBridge()
         self.bridge.event_recorded.connect(self._on_event_recorded)
         self.bridge.pipeline_error.connect(self._show_runtime_error)
+        # Live copy of events for the teacher panel, only when its address is set.
+        self.live = LiveReporter.from_env(config.data_dir)
+        if self.live is not None:
+            # Прошлые сессии, которые не дошли до преподавателя целиком.
+            start_background_resync(config.database_path, self.live.base_url, self.live.token)
         self.pipeline = EventPipeline(
             config.database_path,
             config.screenshots_dir,
             on_recorded=self.bridge.event_recorded.emit,
             on_error=self.bridge.pipeline_error.emit,
             metadata=session_metadata(student_name),
+            live=self.live,
+            # Glances and keys during the pre-test check do not count.
+            require_test_start=True,
         )
         self.pipeline.start()
 
@@ -410,6 +497,10 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._render_question()
+        # На время экзамена окно на весь экран, без рамки и кнопок размера.
+        from ui.window_lock import WindowLock, fullscreen_enabled
+
+        self.window_lock = WindowLock(self) if fullscreen_enabled() else None
         self.risk_timer = QTimer(self)
         self.risk_timer.timeout.connect(self._refresh_risk)
         self.risk_timer.start(1000)
@@ -458,6 +549,76 @@ class MainWindow(QMainWindow):
         return card, layout
 
     def _build_test_panel(self) -> QWidget:
+        # Page 0: the pre-test check. Page 1: the questions.
+        self.test_stack = QStackedWidget()
+        self.test_stack.addWidget(self._build_check_card())
+        self.test_stack.addWidget(self._build_question_card())
+        return self.test_stack
+
+    def _build_check_card(self) -> QWidget:
+        card, layout = self._card()
+        eyebrow = QLabel("ПРОВЕРКА ПЕРЕД ТЕСТОМ")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+
+        title = QLabel("Подготовка к тесту")
+        title.setObjectName("heading")
+        layout.addWidget(title)
+
+        # No word wrap on this page: wrapped labels make Qt recompute heights on
+        # every camera frame, which shows up as a stutter in the preview.
+        hint = QLabel(
+            "Посмотрите в камеру: справа должно появиться ваше изображение.\n"
+            "Вопросы откроются, когда оборудование будет готово."
+        )
+        hint.setStyleSheet("font-size:15px;")
+        layout.addWidget(hint)
+        layout.addSpacing(8)
+
+        self.check_security_label = QLabel()
+        self.check_models_label = QLabel()
+        self.check_camera_label = QLabel()
+        self.check_teacher_label = QLabel()
+        labels = [self.check_security_label, self.check_models_label, self.check_camera_label]
+        if self.live is not None:
+            labels.append(self.check_teacher_label)
+        for label in labels:
+            label.setObjectName("status")
+            layout.addWidget(label)
+        self._set_check(self.check_security_label, "Защита: включается…", None)
+        self._set_check(self.check_models_label, "Модели: загрузка…", None)
+        self._set_check(self.check_camera_label, "Камера: ожидание…", None)
+        self._set_check(self.check_teacher_label, "Связь с преподавателем: подключение…", None)
+        layout.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.start_test_button = QPushButton("Начать тест")
+        self.start_test_button.setEnabled(False)
+        self.start_test_button.clicked.connect(self._begin_test)
+        buttons.addWidget(self.start_test_button)
+        layout.addLayout(buttons)
+        return card
+
+    @staticmethod
+    def _set_check(label: QLabel, text: str, ok: bool | None) -> None:
+        """ok=None means still in progress."""
+        if ok is None:
+            icon, color = "○", "#6B7280"
+        elif ok:
+            icon, color = "●", STATUS_OK_COLOR
+        else:
+            icon, color = "●", STATUS_WARNING_COLOR
+        label.setText(f"{icon} {text}")
+        label.setStyleSheet(f"color:{color};")
+
+    def _begin_test(self) -> None:
+        if not self._camera_ready:
+            return
+        self.pipeline.begin_test()
+        self.test_stack.setCurrentIndex(1)
+
+    def _build_question_card(self) -> QWidget:
         card, layout = self._card()
         eyebrow = QLabel("ДЕМОНСТРАЦИОННЫЙ ТЕСТ")
         eyebrow.setObjectName("eyebrow")
@@ -511,7 +672,7 @@ class MainWindow(QMainWindow):
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_label.setMinimumHeight(250)
         self.camera_label.setStyleSheet(
-            "background:#070b15; border-radius:10px; color:#70809e;"
+            f"background:{ACCENT_SOFT}; border-radius:10px; color:{MUTED};"
         )
         camera_layout.addWidget(self.camera_label)
 
@@ -588,39 +749,38 @@ class MainWindow(QMainWindow):
             self._render_question()
             return
 
-        correct = sum(
-            self.answers.get(index) == question.correct_index
-            for index, question in enumerate(QUESTIONS)
-        )
         self.next_button.setEnabled(False)
         self.progress_label.setText("Тест завершён · контроль выключен")
         self.shutdown()
-        final_risk = self.pipeline.current_risk().total
-        try:
-            events = load_session_events(
-                self.config.database_path,
-                self.pipeline.session_id,
-            )
-        except Exception as exc:
-            events = []
-            self._show_runtime_error(
-                f"Не удалось загрузить таймлайн: {type(exc).__name__}: {exc}"
-            )
         self.hide()
-        review = TeacherReviewDialog(
-            database_path=self.config.database_path,
-            session_id=self.pipeline.session_id,
-            events=events,
-            final_risk=final_risk,
-            test_score=(correct, len(QUESTIONS)),
+        # Студент видит только подтверждение. Риск, кадры и вердикт —
+        # в панели преподавателя (start_teacher.bat), не здесь.
+        finish = StudentFinishDialog(
+            student_name=self.student_name,
+            answered=len(self.answers),
+            total=len(QUESTIONS),
             parent=self,
         )
-        review.exec()
+        finish.exec()
         self.close()
 
     def start_monitoring(self) -> None:
+        if self.window_lock is not None:
+            # До защиты: она проверяет, что окно уже закрывает весь экран.
+            self.window_lock.engage()
         enabled, message = self.security.enable(hwnd=int(self.winId()))
-        self._set_status(self.security_status_label, "Защита", enabled, message)
+        self._set_status(
+            self.security_status_label,
+            "Защита",
+            enabled,
+            "включена" if enabled else "не включена",
+            detail=message,
+        )
+        self._set_check(
+            self.check_security_label,
+            "Защита включена" if enabled else "Защита не включена",
+            enabled,
+        )
 
         self.camera_thread = QThread(self)
         self.camera_worker = CameraWorker(self.config, self.detectors, self.pipeline)
@@ -639,6 +799,14 @@ class MainWindow(QMainWindow):
         self.pipeline.submit(event, frame)
 
     def _show_frame(self, image: QImage) -> None:
+        if not self._camera_ready:
+            # The worker emits the first preview only after the first analysis,
+            # when YOLO, CLIP and MediaPipe have actually loaded their weights.
+            self._camera_ready = True
+            self._set_check(self.check_camera_label, "Камера работает", True)
+            if all(self._module_results.values()):
+                self._set_check(self.check_models_label, "Модели готовы", True)
+            self.start_test_button.setEnabled(True)
         pixmap = QPixmap.fromImage(image)
         self.camera_label.setPixmap(
             pixmap.scaled(
@@ -654,21 +822,59 @@ class MainWindow(QMainWindow):
         title: str,
         ok: bool,
         message: str,
+        detail: str = "",
     ) -> None:
         icon = "●" if ok else "○"
         color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
         label.setText(f"{icon} {title}: {message}")
         label.setStyleSheet(f"color:{color};")
+        # Module names and errors stay available on hover for the team.
+        label.setToolTip(detail)
 
     def _on_camera_status(self, ok: bool, message: str) -> None:
-        self._set_status(self.camera_status_label, "Камера", ok, message)
+        icon = "●" if ok else "○"
+        color = STATUS_OK_COLOR if ok else STATUS_WARNING_COLOR
+        self.camera_status_label.setText(f"{icon} {message}")
+        self.camera_status_label.setStyleSheet(f"color:{color};")
         if not ok and "остановлена" not in message:
             self.camera_label.setText(message)
+            if not self._camera_ready:
+                self._set_check(
+                    self.check_camera_label,
+                    f"{message}. Обратитесь к преподавателю",
+                    False,
+                )
+        elif ok and not self._camera_ready:
+            self._set_check(
+                self.check_camera_label, "Камера подключена, первый анализ…", None
+            )
 
     def _on_module_status(self, status: ModuleStatus) -> None:
         label = self.phone_status_label if status.name == "phone" else self.gaze_status_label
         title = "Телефон" if status.name == "phone" else "Взгляд"
-        self._set_status(label, title, status.loaded, status.message)
+        self._set_status(
+            label,
+            title,
+            status.loaded,
+            "работает" if status.loaded else "не загружен",
+            detail=status.message,
+        )
+        self._module_results[status.name] = status.loaded
+        if {"phone", "gaze"} <= self._module_results.keys():
+            failed = [
+                "телефон" if name == "phone" else "взгляд"
+                for name, loaded in self._module_results.items()
+                if not loaded
+            ]
+            if failed:
+                self._set_check(
+                    self.check_models_label,
+                    "Модели не загрузились: " + ", ".join(failed),
+                    False,
+                )
+            else:
+                # Weights load on the first frame; the camera check finishes it.
+                self._set_check(self.check_models_label, "Модели: подготовка…", None)
 
     def _on_performance(
         self,
@@ -678,12 +884,14 @@ class MainWindow(QMainWindow):
         gaze_ms: float,
     ) -> None:
         total_ms = phone_ms + gaze_ms
-        message = (
-            f"камера {camera_fps:.1f} FPS · анализ {analysis_fps:.1f} FPS · "
+        message = f"камера {camera_fps:.0f} FPS · анализ {analysis_fps:.0f} в секунду"
+        detail = (
             f"YOLO {phone_ms:.0f} мс · MediaPipe {gaze_ms:.0f} мс · "
             f"вместе {total_ms:.0f} мс"
         )
-        self._set_status(self.performance_status_label, "Скорость", True, message)
+        self._set_status(
+            self.performance_status_label, "Скорость", True, message, detail=detail
+        )
 
     def _update_risk_display(self, risk: float) -> None:
         self.risk_bar.setValue(max(0, min(100, round(risk))))
@@ -701,6 +909,21 @@ class MainWindow(QMainWindow):
     def _refresh_risk(self) -> None:
         if not self._shutdown_done:
             self._update_risk_display(self.pipeline.current_risk().total)
+            self._refresh_teacher_link()
+
+    def _refresh_teacher_link(self) -> None:
+        """The test never waits for the network: the link is shown, not required."""
+        if self.live is None:
+            return
+        if self.live.connected:
+            self._set_check(self.check_teacher_label, "Связь с преподавателем есть", True)
+        elif self.live.connected is False:
+            self._set_check(
+                self.check_teacher_label,
+                "Нет связи с преподавателем, события отправятся позже",
+                False,
+            )
+            self.check_teacher_label.setToolTip(f"{self.live.url}\n{self.live.last_error}")
 
     def _on_event_recorded(self, stored: StoredEvent) -> None:
         data = stored.to_dict()
@@ -720,6 +943,8 @@ class MainWindow(QMainWindow):
         if self._shutdown_done:
             return
         self._shutdown_done = True
+        if getattr(self, "window_lock", None) is not None:
+            self.window_lock.release()
         if hasattr(self, "risk_timer"):
             self.risk_timer.stop()
         try:

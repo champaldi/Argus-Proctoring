@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+import base64
+
+from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,19 +36,25 @@ from PySide6.QtWidgets import (
 from core.storage import StoredEvent
 from core.event_presentation import EVENT_LABELS, application_details
 from .data import (
+    EXAM_ALLOWANCES,
     Review,
     ReviewStore,
     Session,
     VERDICT_LABELS,
+    allowed_event_ids,
     current_verdict,
     event_duration,
+    excluded_event_ids,
     export_roster,
     load_sessions,
     recalculate_risk,
     resolve_evidence_path,
     risk_zone,
     summarize_events,
+    weight_label,
 )
+from .live import INFO, Alert, LiveServer, local_addresses
+from .rules import LEVEL_TITLES, SUSPICIOUS, VIOLATION, Finding, classify, evaluate_rules
 from ui.theme import (
     CRITICAL,
     CRITICAL_TEXT,
@@ -58,7 +67,7 @@ from ui.theme import (
     window_title,
 )
 
-from .conclusion import build_conclusion
+from .conclusion import Conclusion, build_conclusion
 from .report import default_report_name, write_session_report
 
 
@@ -73,6 +82,14 @@ MOMENT_LABELS = {
     "multiple_monitors": "Несколько мониторов",
     "capture_protection_failed": "Ошибка защиты",
     "too_close_to_camera": "Близко к камере",
+    "protection_disabled": "Защита отключена",
+    "gaze_down": "Взгляд вниз",
+    "gaze_side": "Взгляд в сторону",
+    "no_face": "Нет лица",
+    "hotkey_blocked": "Заблокированные клавиши",
+    "window_switched": "Смена окна",
+    "suspicious_process": "Запрещённая программа",
+    "injected_input": "Удалённый ввод",
 }
 
 
@@ -101,6 +118,22 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
     layout.setSpacing(10)
     return frame, layout
 
+
+
+def _conclusion_html(conclusion: Conclusion) -> str:
+    """The conclusion with the headline and fired rules in bold."""
+    parts = [f"<p><b>{escape(conclusion.headline)}</b></p>"]
+    if conclusion.findings:
+        parts.append(
+            f"<p>Сработало правил: <b>{len(conclusion.findings)}</b> — "
+            "подробно с кадрами в блоке «Сработавшие правила» ниже.</p><p>События:</p>"
+        )
+    if conclusion.reasons:
+        parts.append("<ul>")
+        parts.extend(f"<li>{escape(str(item))}</li>" for item in conclusion.reasons)
+        parts.append("</ul>")
+    parts.append(f"<p>{escape(conclusion.recommendation)}</p>")
+    return "".join(parts)
 
 class NumericItem(QTableWidgetItem):
     """Сортирует риск как число, а не как строку."""
@@ -168,11 +201,97 @@ class ImageDialog(QDialog):
         root.addWidget(label)
 
 
+TOAST_SECONDS = 12
+MAX_TOASTS = 3
+TOAST_COLORS = {VIOLATION: CRITICAL_TEXT, SUSPICIOUS: WARNING_TEXT, INFO: MUTED}
+
+
+def _outcome_text(outcome: str, findings: tuple[Finding, ...]) -> str:
+    """«Нарушение · V1, V2», «Подозрительно · S5» или «Чисто»."""
+    if outcome == "clean":
+        return "Чисто"
+    ids = ", ".join(finding.rule_id for finding in findings if finding.level == outcome)
+    title = "Нарушение" if outcome == VIOLATION else "Подозрительно"
+    return f"{title} · {ids}"
+
+
+def _pixmap_from_base64(value: str | None) -> QPixmap | None:
+    if not value:
+        return None
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        return None
+    pixmap = QPixmap()
+    return pixmap if pixmap.loadFromData(QByteArray(data)) else None
+
+
+class AlertToast(QFrame):
+    """Всплывающее уведомление в правом верхнем углу; закрывается по щелчку."""
+
+    def __init__(self, alert: Alert, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.alert = alert
+        color = TOAST_COLORS.get(alert.level, MUTED)
+        self.setObjectName("toast")
+        self.setStyleSheet(
+            "QFrame#toast { background: #FFFFFF; border: 1px solid #E5E7EB;"
+            f" border-left: 6px solid {color}; border-radius: 10px; }}"
+            " QLabel { border: 0; background: transparent; }"
+        )
+        self.setFixedWidth(420)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+        pixmap = _pixmap_from_base64(alert.thumbnail)
+        if pixmap is not None:
+            picture = QLabel()
+            picture.setPixmap(pixmap.scaled(
+                QSize(120, 90), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+            layout.addWidget(picture, 0, Qt.AlignmentFlag.AlignTop)
+        when = alert.occurred_at.astimezone().strftime("%H:%M:%S")
+        level = LEVEL_TITLES.get(alert.level)
+        headline = f"{level} · {alert.rule_id}" if level else alert.title
+        self.text_label = QLabel(
+            f"<b style='color:{color}'>{escape(headline)}</b>"
+            f" <span style='color:{MUTED}'>{when}</span><br>"
+            + (f"<b>{escape(alert.title)}</b><br>" if level else "")
+            + escape(alert.text)
+        )
+        self.text_label.setWordWrap(True)
+        self.text_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.text_label, 1)
+        self.setToolTip("Щёлкните, чтобы закрыть")
+        # The timer is a child: it disappears with the toast if that is closed first.
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.close)
+        self._timer.start(TOAST_SECONDS * 1000)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        # Deleted later by the window, which still holds a reference to it.
+        self.close()
+
+
 class TeacherWindow(QMainWindow):
     """Список сессий и подробный просмотр в одном окне."""
 
-    def __init__(self, database_path: Path, reviews_path: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        reviews_path: Path,
+        live_server: LiveServer | None = None,
+        *,
+        show_alerts: bool = False,
+    ) -> None:
         super().__init__()
+        self.live_server = live_server
+        # Всплывающие уведомления — по желанию (--alerts); журнал и активные
+        # сессии работают и без них.
+        self.show_alerts = show_alerts
+        self._toasts: list[AlertToast] = []
         # Qt offscreen на Windows иногда не видит системные шрифты сам.
         if not QFontDatabase.families():
             for path in (Path("C:/Windows/Fonts/segoeui.ttf"),
@@ -184,6 +303,10 @@ class TeacherWindow(QMainWindow):
                         QApplication.instance().setFont(QFont(families[0], 10))
                         break
         self.database_path = database_path
+        # Frames are read from disk once; the session page is rebuilt on every
+        # mark or condition change and would otherwise reload every image.
+        self._pixmaps: dict[str, QPixmap] = {}
+        self._thumbnails: dict[str, QIcon] = {}
         self.reviews = ReviewStore(reviews_path)
         self.sessions: list[Session] = []
         self.review_values: dict[str, Review] = {}
@@ -197,6 +320,12 @@ class TeacherWindow(QMainWindow):
         self.sessions_page = self._build_sessions_page()
         self.pages.addWidget(self.sessions_page)
         self.reload_sessions()
+        if self.live_server is not None:
+            self._refresh_live_table()
+            self.live_timer = QTimer(self)
+            self.live_timer.timeout.connect(self._poll_live)
+            self.live_timer.start(500)
+            self._live_ticks = 0
 
     def _build_sessions_page(self) -> QWidget:
         page = QWidget()
@@ -231,29 +360,139 @@ class TeacherWindow(QMainWindow):
         self.database_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         summary_layout.addWidget(self.database_label)
         root.addWidget(summary_card)
+        if self.live_server is not None:
+            root.addWidget(self._build_live_card())
 
         filters = QHBoxLayout()
         self.review_filter = QCheckBox("Только требующие проверки")
         self.review_filter.toggled.connect(self._populate_table)
         filters.addWidget(self.review_filter)
+        self.violation_filter = QCheckBox("Только с признаками нарушения")
+        self.violation_filter.toggled.connect(self._populate_table)
+        filters.addWidget(self.violation_filter)
         filters.addStretch()
         root.addLayout(filters)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels((
-            "Студент", "Дата", "Длительность", "Риск", "Нарушения по типам", "Статус",
+            "Студент", "Дата", "Длительность", "Риск", "Итог по правилам",
+            "Нарушения по типам", "Статус",
         ))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.cellDoubleClicked.connect(self._open_row)
         root.addWidget(self.table, 1)
         hint = QLabel("Двойной щелчок по строке открывает сессию.")
         hint.setObjectName("eyebrow")
         root.addWidget(hint)
         return page
+
+    def _build_live_card(self) -> QFrame:
+        card, layout = _card()
+        title = QLabel("Активные сессии")
+        title.setObjectName("section")
+        layout.addWidget(title)
+        port = self.live_server.port
+        addresses = ", ".join(f"{address}:{port}" for address in local_addresses())
+        self.live_address_label = QLabel(
+            f"Адрес для студентов: {addresses}  ·  в браузере: http://{local_addresses()[0]}:{port}"
+        )
+        self.live_address_label.setObjectName("eyebrow")
+        self.live_address_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.live_address_label)
+        self.live_table = QTableWidget(0, 4)
+        self.live_table.setHorizontalHeaderLabels(
+            ("Студент", "Статус", "Риск", "Главное правило")
+        )
+        self.live_table.verticalHeader().setVisible(False)
+        self.live_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.live_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        header = self.live_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.live_table.setMaximumHeight(190)
+        layout.addWidget(self.live_table)
+        self.live_empty_label = QLabel("Пока никто не начал тест")
+        self.live_empty_label.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(self.live_empty_label)
+        return card
+
+    def _refresh_live_table(self) -> None:
+        sessions = self.live_server.board.sessions()
+        self.live_table.setRowCount(0)
+        for live in sessions:
+            row = self.live_table.rowCount()
+            self.live_table.insertRow(row)
+            status = live.status()
+            values = (live.display_name, status, f"{live.risk:.0f}", live.rule_summary or "—")
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column == 2:
+                    cell.setForeground(QColor(_risk_color(live.risk)))
+                if column == 3 and live.worst_level:
+                    cell.setForeground(QColor(TOAST_COLORS[live.worst_level]))
+                if column == 1 and status == "Нет связи":
+                    cell.setForeground(QColor(WARNING_TEXT))
+                self.live_table.setItem(row, column, cell)
+        self.live_table.setVisible(bool(sessions))
+        self.live_empty_label.setVisible(not sessions)
+
+    def _poll_live(self) -> None:
+        """Забирает уведомления из сервера; статусы обновляет раз в 5 секунд."""
+        alerts = self.live_server.drain()
+        self._live_ticks += 1
+        changed = self.live_server.changed.is_set()
+        self.live_server.changed.clear()
+        if self.show_alerts:
+            for alert in alerts:
+                if alert.title == "Начал тест":
+                    continue
+                self._show_toast(alert)
+            if any(alert.level == VIOLATION for alert in alerts):
+                QApplication.beep()
+        if changed or alerts or self._live_ticks % 10 == 0:
+            self._refresh_live_table()
+        # Журнал на диске пополнился: перечитываем таблицу сессий не чаще раза
+        # в 2 секунды и только на её странице, чтобы не мешать разбору сессии.
+        if self.live_server.archived.is_set() and self._live_ticks % 4 == 0:
+            if self.pages.currentIndex() == 0:
+                self.live_server.archived.clear()
+                self.reload_sessions()
+
+    def _drop_closed_toasts(self) -> None:
+        for toast in self._toasts:
+            if not toast.isVisible():
+                toast.deleteLater()
+        self._toasts = [toast for toast in self._toasts if toast.isVisible()]
+
+    def _show_toast(self, alert: Alert) -> None:
+        self._drop_closed_toasts()
+        while len(self._toasts) >= MAX_TOASTS:
+            oldest = self._toasts.pop(0)
+            oldest.close()
+            oldest.deleteLater()
+        toast = AlertToast(alert, self)
+        toast.show()
+        toast.raise_()
+        self._toasts.append(toast)
+        self._place_toasts()
+
+    def _place_toasts(self) -> None:
+        self._drop_closed_toasts()
+        y = 16
+        for toast in reversed(self._toasts):
+            toast.adjustSize()
+            toast.move(self.width() - toast.width() - 20, y)
+            y += toast.height() + 10
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._place_toasts()
 
     def reload_sessions(self) -> None:
         """Обновляет список, не меняя исходный журнал."""
@@ -280,8 +519,13 @@ class TeacherWindow(QMainWindow):
             verdict = current_verdict(session, self.review_values.get(session.id))
             if self.review_filter.isChecked() and verdict not in {"unreviewed", "questionable"}:
                 continue
-            score = recalculate_risk(session, review.false_positive_ids)
-            summary = summarize_events(session, review.false_positive_ids)
+            excluded = excluded_event_ids(session, review)
+            findings = evaluate_rules(session, excluded)
+            outcome = classify(findings)
+            if self.violation_filter.isChecked() and outcome != VIOLATION:
+                continue
+            score = recalculate_risk(session, excluded)
+            summary = summarize_events(session, excluded)
             count_text = ", ".join(
                 f"{EVENT_LABELS.get(name, name)} ×{item.count}"
                 for name, item in sorted(summary.items())
@@ -293,6 +537,7 @@ class TeacherWindow(QMainWindow):
                 session.started_at.astimezone().strftime("%d.%m.%Y %H:%M"),
                 _duration_text(session.duration_seconds),
                 f"{score:.1f} · {ZONE_LABELS[risk_zone(score)]}",
+                _outcome_text(outcome, findings),
                 count_text,
                 VERDICT_LABELS[verdict].capitalize(),
             )
@@ -303,6 +548,8 @@ class TeacherWindow(QMainWindow):
                 if column == 3:
                     cell.setData(Qt.ItemDataRole.UserRole, score)
                     cell.setForeground(QColor(_risk_color(score)))
+                if column == 4 and outcome in TOAST_COLORS:
+                    cell.setForeground(QColor(TOAST_COLORS[outcome]))
                 self.table.setItem(row, column, cell)
             self.table.setRowHeight(row, 44)
         self.table.setSortingEnabled(True)
@@ -358,7 +605,9 @@ class TeacherWindow(QMainWindow):
             f"{started}  ·  {_duration_text(session.duration_seconds)}  ·  "
             f"{'идёт' if session.status == 'active' else 'завершена' if session.status == 'completed' else session.status}"
         ))
-        score = recalculate_risk(session, review.false_positive_ids)
+        allowed = allowed_event_ids(session, review)
+        excluded = excluded_event_ids(session, review)
+        score = recalculate_risk(session, excluded)
         risk_card, risk_layout = _card()
         risk_label = QLabel(
             f"Пересчитанный риск: {score:.1f} / 100  ·  {ZONE_LABELS[risk_zone(score)]} зона"
@@ -369,22 +618,46 @@ class TeacherWindow(QMainWindow):
         risk_layout.addWidget(QLabel(f"Риск в исходном журнале: {session.final_risk:.1f}"))
         root.addWidget(risk_card)
 
+        conditions_card, conditions_layout = _card()
+        title = QLabel("Условия экзамена")
+        title.setObjectName("section")
+        conditions_layout.addWidget(title)
+        conditions_layout.addWidget(QLabel(
+            "Разрешённое действие не считается нарушением: события остаются в журнале "
+            "с пометкой, риск и правила пересчитываются."
+        ))
+        for key, (label, _types) in EXAM_ALLOWANCES.items():
+            box = QCheckBox(label)
+            box.setChecked(key in review.allowances)
+            box.toggled.connect(
+                lambda checked, kind=key: self._allowance_changed(session, kind, checked)
+            )
+            conditions_layout.addWidget(box)
+        root.addWidget(conditions_card)
+
         conclusion_card, conclusion_layout = _card()
         title = QLabel("Заключение системы")
         title.setObjectName("section")
         conclusion_layout.addWidget(title)
         conclusion_label = QLabel(
-            build_conclusion(session, review.false_positive_ids).as_text()
+            _conclusion_html(build_conclusion(session, excluded))
         )
+        conclusion_label.setTextFormat(Qt.TextFormat.RichText)
         conclusion_label.setWordWrap(True)
+        # Readable from a projector: the rules are the main finding.
+        conclusion_label.setStyleSheet("font-size: 16px;")
         conclusion_layout.addWidget(conclusion_label)
         root.addWidget(conclusion_card)
+
+        findings = evaluate_rules(session, excluded)
+        if findings:
+            root.addWidget(self._rules_card(session, findings))
 
         summary_card, summary_layout = _card()
         title = QLabel("Сводка нарушений")
         title.setObjectName("section")
         summary_layout.addWidget(title)
-        summary = summarize_events(session, review.false_positive_ids)
+        summary = summarize_events(session, excluded)
         if not summary:
             summary_layout.addWidget(QLabel("Подтверждённых нарушений нет."))
         for name, item in sorted(summary.items()):
@@ -400,8 +673,8 @@ class TeacherWindow(QMainWindow):
         title = QLabel("Таймлайн теста")
         title.setObjectName("section")
         timeline_layout.addWidget(title)
-        timeline_layout.addWidget(Timeline(session, review.false_positive_ids))
-        timeline_layout.addWidget(QLabel("Зелёный — низкий вес · жёлтый — средний · красный — высокий · серый — ошибочное событие"))
+        timeline_layout.addWidget(Timeline(session, excluded))
+        timeline_layout.addWidget(QLabel("Зелёный — низкий вес · жёлтый — средний · красный — высокий · серый — ошибочное или разрешённое событие"))
         root.addWidget(timeline_card)
 
         moments_card, moments_layout = _card()
@@ -410,7 +683,7 @@ class TeacherWindow(QMainWindow):
         moments_layout.addWidget(title)
         moments_row = QHBoxLayout()
         moments = sorted(
-            (item for item in session.events if item.event.event_id not in review.false_positive_ids),
+            (item for item in session.events if item.event.event_id not in excluded),
             key=lambda item: (item.weight, item.event.occurred_at), reverse=True,
         )[:5]
         if not moments:
@@ -440,10 +713,12 @@ class TeacherWindow(QMainWindow):
         title = QLabel(f"Все события · {len(session.events)}")
         title.setObjectName("section")
         events_layout.addWidget(title)
-        event_table = QTableWidget(len(session.events), 6)
+        event_table = QTableWidget(len(session.events), 7)
         event_table.setHorizontalHeaderLabels((
             "Время", "Нарушение", "Вес", "Длительность", "Источник", "Ложное срабатывание",
+            "Кадр",
         ))
+        event_table.setIconSize(QSize(112, 63))
         event_table.verticalHeader().setVisible(False)
         event_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         event_table.verticalHeader().setMinimumSectionSize(40)
@@ -453,15 +728,19 @@ class TeacherWindow(QMainWindow):
         event_table.blockSignals(True)
         for row, stored in enumerate(session.events):
             duration = event_duration(stored)
+            is_allowed = stored.event.event_id in allowed
             values = (
                 stored.event.occurred_at.astimezone().strftime("%H:%M:%S"),
-                _event_name(stored), f"+{stored.weight:g}",
+                _event_name(stored) + (" · разрешено" if is_allowed else ""),
+                weight_label(stored),
                 f"{duration:.1f} с" if duration is not None else "—",
                 stored.event.source,
             )
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
                 cell.setToolTip(value)
+                if is_allowed:
+                    cell.setForeground(QColor(MUTED))
                 event_table.setItem(row, column, cell)
             flag = QTableWidgetItem()
             flag.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
@@ -471,11 +750,23 @@ class TeacherWindow(QMainWindow):
                 else Qt.CheckState.Unchecked
             )
             event_table.setItem(row, 5, flag)
+            frame_cell = QTableWidgetItem()
+            frame_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            frame_cell.setToolTip("Нажмите, чтобы открыть кадр")
+            if stored.screenshot_path:
+                frame_cell.setIcon(self._thumbnail(stored))
+            else:
+                frame_cell.setText("нет кадра")
+            event_table.setItem(row, 6, frame_cell)
+            event_table.setRowHeight(row, 72)
         event_table.blockSignals(False)
+        event_table.cellClicked.connect(
+            lambda row, column: self._open_event_frame(session, row, column)
+        )
         event_table.itemChanged.connect(
             lambda item: self._event_flag_changed(session, item)
         )
-        event_table.setMinimumHeight(min(450, max(140, 60 * (len(session.events) + 1))))
+        event_table.setMinimumHeight(min(520, max(160, 76 * (len(session.events) + 1))))
         events_layout.addWidget(event_table)
         root.addWidget(events_card)
 
@@ -517,6 +808,25 @@ class TeacherWindow(QMainWindow):
         self.pages.setCurrentWidget(page)
 
     def _frame_pixmap(self, stored: StoredEvent) -> QPixmap:
+        key = stored.event.event_id
+        cached = self._pixmaps.get(key)
+        if cached is None:
+            cached = self._load_frame(stored)
+            self._pixmaps[key] = cached
+        return cached
+
+    def _thumbnail(self, stored: StoredEvent) -> QIcon:
+        key = stored.event.event_id
+        icon = self._thumbnails.get(key)
+        if icon is None:
+            icon = QIcon(self._frame_pixmap(stored).scaled(
+                QSize(224, 126), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+            self._thumbnails[key] = icon
+        return icon
+
+    def _load_frame(self, stored: StoredEvent) -> QPixmap:
         if stored.screenshot_path:
             path = Path(stored.screenshot_path)
             # Older EventStore versions wrote paths relative to the launch CWD;
@@ -534,6 +844,68 @@ class TeacherWindow(QMainWindow):
         painter.end()
         return pixmap
 
+    def _rules_card(self, session: Session, findings: tuple[Finding, ...]) -> QFrame:
+        """Each fired rule as a card: what it means and the frames it is built on."""
+        card, layout = _card()
+        title = QLabel(f"Сработавшие правила · {len(findings)}")
+        title.setObjectName("section")
+        layout.addWidget(title)
+        hint = QLabel(
+            "Одиночный сигнал — только наблюдение. Правило срабатывает на сочетание "
+            "событий во времени; ниже — события, из которых оно сложилось."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        by_id = {stored.event.event_id: stored for stored in session.events}
+        for finding in findings:
+            box = QFrame()
+            violation = finding.level == VIOLATION
+            accent = CRITICAL_TEXT if violation else WARNING_TEXT
+            box.setStyleSheet(
+                f"QFrame {{ border-left: 4px solid {accent}; background: #F9FAFB;"
+                " border-radius: 8px; } QLabel { border: 0; background: transparent; }"
+            )
+            inner = QVBoxLayout(box)
+            inner.setContentsMargins(14, 10, 14, 10)
+            level = "Признаки нарушения" if violation else "Подозрительно"
+            name = QLabel(f"{finding.rule_id} · {finding.title}  —  {level}")
+            name.setStyleSheet(f"font-size:16px; font-weight:700; color:{accent};")
+            inner.addWidget(name)
+            explanation = QLabel(finding.explanation.capitalize())
+            explanation.setWordWrap(True)
+            inner.addWidget(explanation)
+            frames = QHBoxLayout()
+            shown = [by_id[event_id] for event_id in finding.event_ids if event_id in by_id]
+            for stored in shown[:4]:
+                pixmap = self._frame_pixmap(stored)
+                button = QToolButton()
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+                button.setIcon(self._thumbnail(stored))
+                button.setIconSize(QSize(160, 90))
+                button.setFixedSize(186, 140)
+                button.setText(
+                    f"{MOMENT_LABELS.get(stored.event.type.value, _event_name(stored))}\n"
+                    f"{stored.event.occurred_at.astimezone():%H:%M:%S}"
+                )
+                button.setToolTip(_event_name(stored))
+                button.clicked.connect(
+                    lambda checked=False, item=stored, image=pixmap:
+                    ImageDialog(_event_name(item), image, self).exec()
+                )
+                frames.addWidget(button)
+            if len(shown) > 4:
+                frames.addWidget(QLabel(f"и ещё {len(shown) - 4}"))
+            frames.addStretch()
+            inner.addLayout(frames)
+            layout.addWidget(box)
+        return card
+
+    def _open_event_frame(self, session: Session, row: int, column: int) -> None:
+        if column != 6 or not 0 <= row < len(session.events):
+            return
+        stored = session.events[row]
+        ImageDialog(_event_name(stored), self._frame_pixmap(stored), self).exec()
+
     def _event_flag_changed(self, session: Session, item: QTableWidgetItem) -> None:
         if item.column() != 5:
             return
@@ -545,6 +917,15 @@ class TeacherWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Не удалось сохранить отметку", str(exc))
+            return
+        self._show_session(session, draft_comment=draft)
+
+    def _allowance_changed(self, session: Session, kind: str, enabled: bool) -> None:
+        draft = self.comment_edit.toPlainText()
+        try:
+            self.reviews.set_allowance(session.id, kind, enabled)
+        except Exception as exc:
+            QMessageBox.critical(self, "Не удалось сохранить условия экзамена", str(exc))
             return
         self._show_session(session, draft_comment=draft)
 

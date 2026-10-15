@@ -101,6 +101,102 @@ class TeacherUiTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_rule_outcome_column_and_violation_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "proctoring.db"
+            seed_demo(database, root / "screenshots")
+            window = TeacherWindow(database, root / "reviews.db")
+            try:
+                outcomes = [window.table.item(row, 4).text() for row in range(window.table.rowCount())]
+                violations = [text for text in outcomes if text.startswith("Нарушение")]
+                self.assertTrue(violations)
+                window.violation_filter.setChecked(True)
+                self.assertEqual(window.table.rowCount(), len(violations))
+                for row in range(window.table.rowCount()):
+                    self.assertTrue(window.table.item(row, 4).text().startswith("Нарушение"))
+            finally:
+                window.close()
+
+    def test_live_panel_without_alerts_keeps_active_sessions_quiet(self) -> None:
+        from shiboken6 import delete
+        from teacher.live import LiveBoard, LiveServer
+
+        server = LiveServer(LiveBoard(), host="127.0.0.1", port=0)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            window = TeacherWindow(root / "proctoring.db", root / "reviews.db", live_server=server)
+            try:
+                event = ProctorEvent.create("phone_aimed_at_screen", source="test")
+                for alert in server.board.apply({
+                    "kind": "event", "session_id": "s1", "student": "Карим",
+                    "event": event.to_dict(), "weight": 45, "risk_total": 45,
+                }):
+                    server.alerts.put(alert)
+                server.changed.set()
+                window._poll_live()
+                self.assertEqual(window.live_table.rowCount(), 1)
+                self.assertEqual(window._toasts, [])
+            finally:
+                window.close()
+                server.server_close()
+                delete(window)
+
+    def test_live_alert_appears_in_table_and_toast(self) -> None:
+        from teacher.archive import SessionArchive
+        from teacher.live import LiveBoard, LiveServer
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = SessionArchive(root / "proctoring.db")
+            server = LiveServer(LiveBoard(), host="127.0.0.1", port=0, archive=archive)
+            window = TeacherWindow(
+                root / "proctoring.db", root / "reviews.db", live_server=server,
+                show_alerts=True,
+            )
+            try:
+                window.show()
+                self.assertFalse(window.live_table.isVisible())
+                self.assertIn(str(server.port), window.live_address_label.text())
+                base = {"session_id": "s1", "student": "Карим",
+                        "started_at": "2026-10-16T10:00:00+00:00"}
+                event = ProctorEvent.create("phone_aimed_at_screen", source="test")
+                for message in (
+                    {**base, "kind": "start"},
+                    {**base, "kind": "event", "event": event.to_dict(), "weight": 45,
+                     "risk_total": 45, "thumbnail": "bm90IGEganBlZw=="},
+                ):
+                    archive.record(message)
+                    for alert in server.board.apply(message):
+                        server.alerts.put(alert)
+                server.changed.set()
+                server.archived.set()
+                self.assertEqual(window.table.rowCount(), 0)
+                for _ in range(4):  # журнал перечитывается раз в 4 тика
+                    window._poll_live()
+                self.app.processEvents()
+                self.assertEqual(window.live_table.rowCount(), 1)
+                self.assertEqual(window.live_table.item(0, 0).text(), "Карим")
+                self.assertEqual(window.live_table.item(0, 2).text(), "45")
+                self.assertIn("V1", window.live_table.item(0, 3).text())
+                self.assertEqual(len(window._toasts), 1)  # «Начал тест» без всплывашки
+                self.assertIn("Фотографирование экрана", window._toasts[0].text_label.text())
+                # Сессия с другого ноутбука появилась в общей таблице сессий.
+                self.assertEqual(window.table.rowCount(), 1)
+                self.assertEqual(window.table.item(0, 0).text(), "Карим")
+                for alert in server.board.apply({**base, "kind": "finish", "final_risk": 45}):
+                    server.alerts.put(alert)
+                window._poll_live()
+                self.assertEqual(window.live_table.item(0, 1).text(), "Завершил")
+                self.assertEqual(len(window._toasts), 2)
+            finally:
+                window.close()
+                server.server_close()
+                # Toasts and timers are Qt children: free them while QApplication lives.
+                from shiboken6 import delete
+
+                delete(window)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,6 +92,13 @@ class RuleTests(RulesFixture):
             self.fired(("suspicious_process", 20), ("injected_input", 60)), ["V4"]
         )
 
+    def test_emergency_release_is_a_violation_and_covers_exit_attempts(self):
+        self.assertEqual(
+            self.fired(("hotkey_blocked", 10), ("hotkey_blocked", 20),
+                       ("hotkey_blocked", 30), ("protection_disabled", 40)),
+            ["V7"],
+        )
+
     def test_second_face_with_side_look_is_a_prompt(self):
         self.assertEqual(self.fired(("multiple_faces", 100), ("gaze_side", 110)), ["V5"])
 

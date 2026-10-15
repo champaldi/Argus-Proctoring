@@ -12,6 +12,8 @@ from typing import Any
 from events import EventType, ProctorEvent
 
 
+REFERENCE_PHOTO_NAME = "reference.jpg"
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -124,6 +126,41 @@ class EventStore:
             ),
         )
         self.connection.commit()
+
+    def save_reference_photo(self, session_id: str, frame: Any) -> str:
+        """Store the student's control photo and remember its path in the session.
+
+        The teacher compares this frame with the person they expect; the
+        application performs no face recognition.
+        """
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("opencv-python is required to save the control photo") from exc
+
+        session_dir = self.screenshots_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        destination = session_dir / REFERENCE_PHOTO_NAME
+        if not cv2.imwrite(str(destination), frame):
+            raise OSError(f"could not write the control photo to {destination}")
+        row = self.connection.execute(
+            "SELECT metadata_json FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"session not found: {session_id}")
+        try:
+            metadata = json.loads(row[0] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["reference_photo"] = str(destination)
+        self.connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, default=str), session_id),
+        )
+        self.connection.commit()
+        return str(destination)
 
     def _save_screenshot(self, event: ProctorEvent, session_id: str, frame: Any) -> str:
         try:

@@ -17,6 +17,8 @@ from events import ProctorEvent
 from teacher.data import (
     Review,
     ReviewStore,
+    allowed_event_ids,
+    excluded_event_ids,
     current_verdict,
     export_roster,
     load_sessions,
@@ -157,3 +159,49 @@ class TeacherDataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExamAllowanceTests(TeacherDataTests):
+    def test_allowance_is_stored_per_session_and_can_be_removed(self) -> None:
+        store = ReviewStore(self.root / "reviews.db")
+        store.set_allowance("session-1", "look_side", True)
+        self.assertEqual(store.load_review("session-1").allowances, frozenset({"look_side"}))
+        store.set_allowance("session-1", "look_side", False)
+        self.assertEqual(store.load_review("session-1").allowances, frozenset())
+
+    def test_unknown_allowance_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ReviewStore(self.root / "reviews.db").set_allowance("session-1", "phone", True)
+
+    def test_allowed_events_leave_risk_and_summary_but_stay_in_journal(self) -> None:
+        session = load_sessions(self.database)[0]
+        review = Review(allowances=frozenset({"look_side"}))
+        self.assertEqual(allowed_event_ids(session, review), frozenset({self.gaze_id}))
+        excluded = excluded_event_ids(session, review)
+        self.assertEqual(recalculate_risk(session, excluded), recalculate_risk(
+            session, {self.gaze_id}))
+        self.assertNotIn("gaze_side", summarize_events(session, excluded))
+        self.assertEqual(len(session.events), 2)
+
+    def test_phone_is_never_allowed(self) -> None:
+        session = load_sessions(self.database)[0]
+        everything = Review(allowances=frozenset({"look_down", "look_side"}))
+        self.assertNotIn(self.phone_id, excluded_event_ids(session, everything))
+
+    def test_false_positives_and_allowances_combine(self) -> None:
+        session = load_sessions(self.database)[0]
+        review = Review(false_positive_ids=frozenset({self.phone_id}),
+                        allowances=frozenset({"look_side"}))
+        self.assertEqual(excluded_event_ids(session, review),
+                         frozenset({self.phone_id, self.gaze_id}))
+
+
+class WeightLabelTests(unittest.TestCase):
+    def test_zero_after_the_type_limit_is_explained(self) -> None:
+        from core.storage import StoredEvent
+        from teacher.data import weight_label
+
+        capped = StoredEvent(ProctorEvent.create("hotkey_blocked", source="t"), 0.0, 30.0, None)
+        normal = StoredEvent(ProctorEvent.create("phone_detected", source="t"), 25.0, 25.0, None)
+        self.assertEqual(weight_label(capped), "+0 · лимит типа")
+        self.assertEqual(weight_label(normal), "+25")

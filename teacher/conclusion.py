@@ -55,6 +55,7 @@ REASON_PHRASES = {
     "multiple_faces": "в кадре несколько лиц",
     "remote_session": "тест запущен через удалённую сессию",
     "injected_input": "ввод не с физических устройств",
+    "protection_disabled": "защита отключена вручную",
     "suspicious_process": "запущены запрещённые программы",
     "multiple_monitors": "подключено несколько мониторов",
     "no_face": "студента не было в кадре",
@@ -69,6 +70,7 @@ MAX_REASONS = 4
 # Эти сигналы не бывают случайными: даже один такой эпизод стоит посмотреть,
 # каким бы низким ни был суммарный риск.
 STRONG_SIGNALS = frozenset({
+    "protection_disabled",
     "phone_aimed_at_screen",
     "phone_detected",
     "multiple_faces",

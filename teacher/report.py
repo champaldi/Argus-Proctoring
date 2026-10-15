@@ -18,16 +18,21 @@ from core.storage import StoredEvent
 from ui.theme import APP_NAME
 
 from .conclusion import build_conclusion
+from .rules import VIOLATION, evaluate_rules
 from .data import (
+    EXAM_ALLOWANCES,
     Review,
     Session,
     VERDICT_LABELS,
+    allowed_event_ids,
     current_verdict,
     event_duration,
+    excluded_event_ids,
     recalculate_risk,
     resolve_evidence_path,
     risk_zone,
     summarize_events,
+    weight_label,
 )
 
 
@@ -66,6 +71,14 @@ figure { margin:0; }
 .risk { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
 .risk strong { font-size:34px; line-height:1; font-variant-numeric:tabular-nums; }
 .conclusion ul { margin:6px 0 10px; padding-left:20px; }
+.rule { border-left:4px solid var(--medium); background:#F9FAFB; border-radius:8px;
+        padding:10px 14px; margin:10px 0; }
+.rule.violation { border-left-color:var(--high); }
+.rule b { display:block; }
+.rule .frames { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; }
+.rule .frames figure { width:180px; }
+.rule .frames img, .thumb { width:100%; border-radius:6px; border:1px solid var(--line); display:block; }
+td.frame { width:130px; }
 .note { font-size:13px; color:var(--muted); border-top:1px solid var(--line);
         margin-top:12px; padding-top:10px; }
 table { width:100%; border-collapse:collapse; font-size:14px; }
@@ -102,6 +115,12 @@ def _duration_text(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+# Frames in the report are shown at most this wide; full-size camera frames
+# would make a long session's report tens of megabytes.
+REPORT_FRAME_WIDTH = 480
+REPORT_JPEG_QUALITY = 80
+
+
 def _image_data_uri(path: Path | None) -> str | None:
     if path is None:
         return None
@@ -111,8 +130,31 @@ def _image_data_uri(path: Path | None) -> str | None:
         return None
     if not payload:
         return None
-    kind = "png" if path.suffix.lower() == ".png" else "jpeg"
+    payload, kind = _shrink(payload, path.suffix.lower())
     return f"data:image/{kind};base64,{base64.b64encode(payload).decode('ascii')}"
+
+
+def _shrink(payload: bytes, suffix: str) -> tuple[bytes, str]:
+    """Downscale a frame for the report; keep the original if OpenCV is missing."""
+    kind = "png" if suffix == ".png" else "jpeg"
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return payload, kind
+    image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return payload, kind
+    height, width = image.shape[:2]
+    if width > REPORT_FRAME_WIDTH:
+        image = cv2.resize(
+            image, (REPORT_FRAME_WIDTH, max(1, round(height * REPORT_FRAME_WIDTH / width))),
+            interpolation=cv2.INTER_AREA,
+        )
+    ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, REPORT_JPEG_QUALITY])
+    if not ok or len(encoded) >= len(payload):
+        return payload, kind
+    return encoded.tobytes(), "jpeg"
 
 
 def _event_title(stored: StoredEvent) -> str:
@@ -166,7 +208,8 @@ def render_session_report(
 ) -> str:
     """Возвращает HTML отчёта; события, снятые преподавателем, в расчёт не входят."""
     review = review or Review()
-    excluded = set(review.false_positive_ids)
+    allowed = allowed_event_ids(session, review)
+    excluded = set(excluded_event_ids(session, review))
     score = recalculate_risk(session, excluded)
     zone = risk_zone(score)
     conclusion = build_conclusion(session, excluded)
@@ -196,10 +239,42 @@ def render_session_report(
 
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in conclusion.reasons)
     reasons_html = f"<ul>{reasons}</ul>" if reasons else ""
-    findings = "".join(f"<li>{escape(finding)}</li>" for finding in conclusion.findings)
+    by_id = {stored.event.event_id: stored for stored in session.events}
+    frame_cache: dict[str, str | None] = {}
+
+    def frame_uri(stored: StoredEvent) -> str | None:
+        key = stored.event.event_id
+        if key not in frame_cache:
+            frame_cache[key] = _image_data_uri(
+                resolve_evidence_path(database_path, stored.screenshot_path)
+            )
+        return frame_cache[key]
+
+    rule_cards = []
+    for finding in evaluate_rules(session, excluded):
+        frames = []
+        for event_id in finding.event_ids[:4]:
+            stored = by_id.get(event_id)
+            if stored is None:
+                continue
+            image = frame_uri(stored)
+            picture = (f'<img src="{image}" alt="Кадр события">' if image
+                       else '<div class="noframe">Нет кадра</div>')
+            frames.append(
+                f"<figure>{picture}<figcaption>"
+                f"{escape(EVENT_LABELS.get(stored.event.type.value, stored.event.type.value))} · "
+                f"{stored.event.occurred_at.astimezone():%H:%M:%S}</figcaption></figure>"
+            )
+        level = "violation" if finding.level == VIOLATION else ""
+        rule_cards.append(
+            f'<div class="rule {level}"><b>{escape(finding.as_text(session))}</b>'
+            f'<div class="frames">{"".join(frames)}</div></div>'
+        )
     findings_html = (
-        f"<p><b>Сработавшие правила</b></p><ul>{findings}</ul><p><b>События</b></p>"
-        if findings
+        "<p><b>Сработавшие правила</b> — одиночный сигнал только наблюдение, правило "
+        "срабатывает на сочетание событий во времени:</p>"
+        + "".join(rule_cards) + "<p><b>События</b></p>"
+        if rule_cards
         else ""
     )
 
@@ -227,7 +302,7 @@ def render_session_report(
     )[:KEY_MOMENTS]
     moment_cards = []
     for stored in moments:
-        image = _image_data_uri(resolve_evidence_path(database_path, stored.screenshot_path))
+        image = frame_uri(stored)
         frame = (
             f'<img src="{image}" alt="Кадр события">'
             if image
@@ -236,7 +311,7 @@ def render_session_report(
         moment_cards.append(
             f"<figure>{frame}<b>{escape(_event_title(stored))}</b>"
             f"<figcaption>{_offset_text(session, stored)} от начала · "
-            f"{stored.event.occurred_at.astimezone():%H:%M:%S} · вклад +{stored.weight:g}"
+            f"{stored.event.occurred_at.astimezone():%H:%M:%S} · вклад {weight_label(stored)}"
             "</figcaption></figure>"
         )
     moments_html = (
@@ -248,20 +323,26 @@ def render_session_report(
     event_rows = []
     for stored in session.events:
         dismissed = stored.event.event_id in excluded
+        mark = (" (разрешено условиями экзамена)" if stored.event.event_id in allowed
+                else " (снято преподавателем)")
         duration = event_duration(stored)
+        image = frame_uri(stored)
+        thumb = (f'<img class="thumb" src="{image}" alt="Кадр события">' if image
+                 else '<span class="muted">нет кадра</span>')
         event_rows.append(
             f'<tr class="{"dismissed" if dismissed else ""}">'
             f'<td class="num">{_offset_text(session, stored)}</td>'
             f"<td>{escape(_event_title(stored))}"
-            f'{" (снято преподавателем)" if dismissed else ""}</td>'
-            f'<td class="num">+{stored.weight:g}</td>'
+            f'{mark if dismissed else ""}</td>'
+            f'<td class="num">{weight_label(stored)}</td>'
             f'<td class="num">{f"{duration:.1f} с" if duration is not None else "—"}</td>'
-            f"<td>{escape(stored.event.source)}</td></tr>"
+            f"<td>{escape(stored.event.source)}</td>"
+            f'<td class="frame">{thumb}</td></tr>'
         )
     events_html = (
         '<div class="scroll"><table><thead><tr><th class="num">Время</th><th>Событие</th>'
         '<th class="num">Вклад</th><th class="num">Длительность</th><th>Источник</th>'
-        "</tr></thead><tbody>" + "".join(event_rows) + "</tbody></table></div>"
+        "<th>Кадр</th></tr></thead><tbody>" + "".join(event_rows) + "</tbody></table></div>"
         if event_rows
         else '<p class="muted">Событий нет.</p>'
     )
@@ -271,9 +352,15 @@ def render_session_report(
         if review.comment.strip()
         else '<p class="muted">Комментария нет.</p>'
     )
-    dismissed_note = (
-        f'<p class="muted">Снято как ошибочные: {len(excluded)}.</p>' if excluded else ""
-    )
+    allowance_labels = [EXAM_ALLOWANCES[key][0] for key in sorted(review.allowances)
+                        if key in EXAM_ALLOWANCES]
+    dismissed_note = "".join((
+        f'<p class="muted">Снято как ошибочные: {len(review.false_positive_ids)}.</p>'
+        if review.false_positive_ids else "",
+        '<p class="muted">Условия экзамена: '
+        + escape("; ".join(allowance_labels)) + f". Разрешённых событий: {len(allowed)}.</p>"
+        if allowance_labels else "",
+    ))
 
     return f"""<!doctype html>
 <html lang="ru">

@@ -173,18 +173,48 @@ class AnalyzerBehaviorTests(unittest.TestCase):
         self.assertEqual(events[0]["face_count"], 2)
         self.assertEqual(self.interval(1.5, 5, face_count=3), [])
 
-    def test_zero_or_multiple_faces_interrupt_gaze_episodes(self):
-        for face_count in (0, 2):
-            with self.subTest(face_count=face_count):
-                self.analyzer.reset()
-                side = metrics(yaw=32, pitch=42)
-                self.assertEqual(self.interval(0, 2.5, side), [])
-                self.sample(3, side, face_count)
-                expected = "no_face" if face_count == 0 else "multiple_faces"
-                self.assertEqual(self.analyzer.last_result.signals, (expected,))
-                self.assertEqual(self.interval(3.5, 6, side), [])
-                events = self.sample(6.5, side)
-                self.assertEqual([event["type"] for event in events], ["gaze_side"])
+    def test_multiple_faces_interrupt_gaze_episodes(self):
+        side = metrics(yaw=32, pitch=42)
+        self.assertEqual(self.interval(0, 2.5, side), [])
+        self.sample(3, side, 2)
+        self.assertEqual(self.analyzer.last_result.signals, ("multiple_faces",))
+        self.assertEqual(self.interval(3.5, 6, side), [])
+        events = self.sample(6.5, side)
+        self.assertEqual([event["type"] for event in events], ["gaze_side"])
+
+    def test_face_lost_after_side_turn_is_still_looking_away(self):
+        # Face Mesh drops a face turned to profile: that is a long side glance,
+        # not an absent student.
+        side = metrics(yaw=32)
+        self.assertEqual(self.interval(0, 1.5, side), [])
+        events = self.interval(2, 6, face_count=0)
+        self.assertEqual([event["type"] for event in events], ["gaze_side"])
+        self.assertTrue(events[0]["turned_away"])
+        self.assertEqual(events[0]["face_count"], 0)
+        self.assertEqual(self.analyzer.last_result.signals, ("gaze_side",))
+
+    def test_face_lost_without_side_turn_is_no_face(self):
+        self.assertEqual(self.interval(0, 1.5), [])
+        events = self.interval(2, 4, face_count=0)
+        self.assertEqual([event["type"] for event in events], ["no_face"])
+
+    def test_face_lost_long_after_side_turn_is_no_face(self):
+        side = metrics(yaw=32)
+        self.interval(0, 1, side)
+        self.interval(1.5, 3)  # back to the screen
+        events = self.interval(3.5, 6, face_count=0)
+        self.assertEqual([event["type"] for event in events], ["no_face"])
+
+    def test_turned_away_too_long_becomes_no_face(self):
+        config = AnalyzerConfig(smoothing_window=1, turned_away_max_seconds=4)
+        analyzer = GazeAnalyzer(config, face_mesh=self.mesh, clock=self.clock)
+        self.addCleanup(analyzer.close)
+        self.analyzer = analyzer
+        self.interval(0, 1, metrics(yaw=32))
+        events = self.interval(1.5, 9, face_count=0)
+        self.assertEqual(
+            [event["type"] for event in events], ["gaze_side", "no_face"]
+        )
 
     def test_switching_from_absence_to_multiple_faces_restarts_timing(self):
         self.assertEqual(self.interval(0, 1.5, face_count=0), [])
