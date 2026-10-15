@@ -7,12 +7,35 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 from shiboken6 import delete
 
 from core.storage import EventStore
 from events import ProctorEvent
-from ui.main_window import TeacherReviewDialog
+from ui.main_window import StudentFinishDialog, TeacherReviewDialog
+
+
+class StudentFinishDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_student_sees_only_completion_without_verdict_or_risk(self) -> None:
+        dialog = StudentFinishDialog(student_name="Карим", answered=4, total=4)
+        self.addCleanup(delete, dialog)
+        texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        buttons = [button.text() for button in dialog.findChildren(QPushButton)]
+        self.assertIn("Тест завершён", texts)
+        self.assertIn("4 из 4", texts)
+        self.assertNotIn("риск", texts.lower())
+        self.assertEqual(buttons, ["Закрыть"])
+
+    def test_close_button_accepts(self) -> None:
+        dialog = StudentFinishDialog(student_name=None, answered=2, total=4)
+        self.addCleanup(delete, dialog)
+        button = dialog.findChild(QPushButton, "finishClose")
+        QTimer.singleShot(0, button.click)
+        self.assertEqual(dialog.exec(), QDialog.DialogCode.Accepted)
 
 
 class TeacherReviewDialogTests(unittest.TestCase):

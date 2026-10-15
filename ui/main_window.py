@@ -59,7 +59,6 @@ from core.pipeline import EventPipeline
 from core.security import SecurityAdapter
 from core.storage import (
     StoredEvent,
-    load_session_events,
     record_teacher_verdict,
 )
 from events import ProctorEvent
@@ -257,6 +256,58 @@ class CameraWorker(QObject):
             self._capture = None
             self.camera_status.emit(False, "Камера остановлена")
             self.finished.emit()
+
+
+class StudentFinishDialog(QDialog):
+    """Экран студента после теста: только подтверждение, без риска и вердикта.
+
+    Разбор сессии и решение «списывал / не списывал» — у преподавателя в панели.
+    """
+
+    def __init__(
+        self,
+        *,
+        student_name: str | None,
+        answered: int,
+        total: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(window_title("Тест завершён"))
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self.setStyleSheet(
+            f"""
+            QDialog, QWidget {{ background: {PAGE}; color: {TEXT}; }}
+            QLabel#finishHeading {{ font-size: 26px; font-weight: 700; color: {HEADING}; }}
+            QPushButton {{ border: 0; border-radius: 9px; padding: 12px 22px;
+                          color: white; font-weight: 700; background: {ACCENT}; }}
+            """
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 32, 32, 28)
+        root.setSpacing(12)
+
+        heading = QLabel("Тест завершён")
+        heading.setObjectName("finishHeading")
+        root.addWidget(heading)
+        name = (student_name or "").strip()
+        if name:
+            root.addWidget(QLabel(name))
+        root.addWidget(QLabel(f"Отвечено вопросов: {answered} из {total}"))
+        note = QLabel("Ответы сохранены. Результат сообщит преподаватель.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED};")
+        root.addWidget(note)
+        root.addSpacing(8)
+
+        close = QPushButton("Закрыть")
+        close.setObjectName("finishClose")
+        close.clicked.connect(self.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        root.addLayout(row)
 
 
 class TeacherReviewDialog(QDialog):
@@ -698,34 +749,19 @@ class MainWindow(QMainWindow):
             self._render_question()
             return
 
-        correct = sum(
-            self.answers.get(index) == question.correct_index
-            for index, question in enumerate(QUESTIONS)
-        )
         self.next_button.setEnabled(False)
         self.progress_label.setText("Тест завершён · контроль выключен")
         self.shutdown()
-        final_risk = self.pipeline.current_risk().total
-        try:
-            events = load_session_events(
-                self.config.database_path,
-                self.pipeline.session_id,
-            )
-        except Exception as exc:
-            events = []
-            self._show_runtime_error(
-                f"Не удалось загрузить таймлайн: {type(exc).__name__}: {exc}"
-            )
         self.hide()
-        review = TeacherReviewDialog(
-            database_path=self.config.database_path,
-            session_id=self.pipeline.session_id,
-            events=events,
-            final_risk=final_risk,
-            test_score=(correct, len(QUESTIONS)),
+        # Студент видит только подтверждение. Риск, кадры и вердикт —
+        # в панели преподавателя (start_teacher.bat), не здесь.
+        finish = StudentFinishDialog(
+            student_name=self.student_name,
+            answered=len(self.answers),
+            total=len(QUESTIONS),
             parent=self,
         )
-        review.exec()
+        finish.exec()
         self.close()
 
     def start_monitoring(self) -> None:
